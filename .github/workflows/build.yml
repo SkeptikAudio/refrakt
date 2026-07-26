@@ -1,0 +1,62 @@
+name: Build
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # NEEDS_WEBVIEW2 TRUE (CMakeLists.txt) requires this SDK to be present
+      # locally — on a dev machine it's installed once via NuGet/PowerShell,
+      # here we just fetch the same NuGet package directly and point JUCE's
+      # FindWebView2.cmake at it via JUCE_WEBVIEW2_PACKAGE_LOCATION.
+      - name: Download WebView2 SDK
+        shell: pwsh
+        run: |
+          $dest = "$env:RUNNER_TEMP\webview2nuget\Microsoft.Web.WebView2.1.0.3485.44"
+          New-Item -ItemType Directory -Force -Path $dest | Out-Null
+          Invoke-WebRequest -Uri "https://www.nuget.org/api/v2/package/Microsoft.Web.WebView2/1.0.3485.44" -OutFile "$env:RUNNER_TEMP\webview2.nupkg"
+          Expand-Archive -Path "$env:RUNNER_TEMP\webview2.nupkg" -DestinationPath $dest -Force
+          echo "WEBVIEW2_DIR=$env:RUNNER_TEMP\webview2nuget" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Configure
+        run: cmake -B Build -DCMAKE_BUILD_TYPE=Release -DJUCE_WEBVIEW2_PACKAGE_LOCATION="${{ env.WEBVIEW2_DIR }}"
+
+      - name: Build
+        run: cmake --build Build --config Release --parallel
+
+      - name: Upload VST3
+        uses: actions/upload-artifact@v4
+        with:
+          name: Refrakt-Windows-VST3
+          path: Build/Refrakt_artefacts/Release/VST3/
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Universal binary (Intel + Apple Silicon) so one build covers every
+      # tester regardless of which Mac they're on.
+      - name: Configure
+        run: cmake -B Build -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES="x86_64;arm64"
+
+      - name: Build
+        run: cmake --build Build --config Release --parallel
+
+      - name: Upload VST3
+        uses: actions/upload-artifact@v4
+        with:
+          name: Refrakt-macOS-VST3
+          path: Build/Refrakt_artefacts/Release/VST3/
+
+      - name: Upload AU
+        uses: actions/upload-artifact@v4
+        with:
+          name: Refrakt-macOS-AU
+          path: Build/Refrakt_artefacts/Release/AU/

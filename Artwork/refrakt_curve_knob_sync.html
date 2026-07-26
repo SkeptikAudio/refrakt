@@ -1,0 +1,358 @@
+<style>
+h2.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+*{box-sizing:border-box;margin:0;padding:0}
+.outer{padding:1rem 0;display:flex;justify-content:center;font-family:'Inter',system-ui,sans-serif;background:#050505;border-radius:10px}
+.plugin{width:700px;background:#0d0d0d;border-radius:8px;overflow:hidden;border:1px solid #2a2a2a;margin:1rem}
+.disp-wrap{padding:14px 16px 10px}
+.sl{font-size:8px;letter-spacing:.2em;color:#999;text-transform:uppercase;font-weight:600;margin-bottom:7px}
+.disp-frame{position:relative;border-radius:8px;overflow:hidden;border:1.5px solid rgba(255,255,255,0.4)}
+canvas#mc{display:block;width:100%;height:200px}
+.frow{display:flex;justify-content:space-between;padding:5px 12px 7px;border-top:1px solid #111;background:#0d0d0d}
+.fl{font-size:8px;color:#555;letter-spacing:.06em;font-weight:500}
+.ctrl{padding:12px 16px 16px;background:#111;display:flex;gap:24px;justify-content:center}
+.kg{display:flex;flex-direction:column;align-items:center;gap:5px}
+canvas.knob{width:44px;height:44px;cursor:ns-resize;touch-action:none}
+.kl{font-size:7.5px;color:#aaa;letter-spacing:.1em;text-transform:uppercase;font-weight:500}
+.kv{font-size:10px;color:#fff;font-weight:600}
+.note{font-size:11px;color:#666;padding:8px 16px 14px;line-height:1.5}
+</style>
+<h2 class="sr-only">Refrakt curve and knob colour fade now perfectly synchronised — when a knob is released both the arc and the curve line fade back to purple together at the same speed using the same easing, and the active glow on the curve is significantly brighter while a knob is being turned</h2>
+<div class="outer">
+<div class="plugin">
+
+  <div class="disp-wrap">
+    <div class="sl">spectral pan curve — drag any knob, then release</div>
+    <div class="disp-frame">
+      <canvas id="mc" height="200"></canvas>
+      <div class="frow">
+        <span class="fl">20 hz</span><span class="fl">100</span><span class="fl">500</span>
+        <span class="fl">1k</span><span class="fl">5k</span><span class="fl">22k</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="ctrl">
+    <div class="kg"><canvas class="knob" id="kTilt" width="88" height="88"></canvas><div class="kl">tilt</div><div class="kv" id="kTiltV">0.3</div></div>
+    <div class="kg"><canvas class="knob" id="kInt" width="88" height="88"></canvas><div class="kl">intensity</div><div class="kv" id="kIntV">65%</div></div>
+    <div class="kg"><canvas class="knob" id="kCyc" width="88" height="88"></canvas><div class="kl">cycles</div><div class="kv" id="kCycV">2</div></div>
+  </div>
+
+  <div class="note">When you grab a knob the curve brightens and glows in that knob's spectrum colour, matching the arc exactly. Release and both fade back to steady purple together — same speed, same easing, perfectly in sync.</div>
+
+</div>
+</div>
+
+<script>
+const PURPLE = [142, 0, 159];
+
+// Single shared colour state — both knob arcs and curve read from this
+let sharedColor = [...PURPLE];
+let sharedAlpha = 0.65;
+let sharedGlow  = 0;
+let activeKnobKey = null;
+let fadeProgress = 1; // 0 = full spectrum colour, 1 = full purple
+
+const FADE_SPEED = 0.018; // same value governs both knob arc and curve
+
+function spectrumColor(norm) {
+  const stops = [
+    {p:0.0, c:[255,80,80]}, {p:0.2, c:[255,154,80]}, {p:0.35, c:[255,210,77]},
+    {p:0.5, c:[142,0,159]}, {p:0.65, c:[100,120,255]}, {p:0.8, c:[93,186,255]},
+    {p:1.0, c:[188,217,255]}
+  ];
+  for (let i = 0; i < stops.length - 1; i++) {
+    if (norm >= stops[i].p && norm <= stops[i+1].p) {
+      const t = (norm - stops[i].p) / (stops[i+1].p - stops[i].p);
+      return stops[i].c.map((v, j) => Math.round(v + (stops[i+1].c[j] - v) * t));
+    }
+  }
+  return stops[stops.length-1].c;
+}
+function lerp(a, b, t) { return a + (b - a) * t; }
+function lerpColor(c1, c2, t) { return c1.map((v, i) => Math.round(v + (c2[i] - v) * t)); }
+
+let params = { tilt: 0.3, intensity: 0.65, cycles: 2 };
+let ranges = { tilt: [-1,1], intensity: [0,1], cycles: [1,6] };
+let draggingKey = null;
+let dragStartY = 0, dragStartVal = 0;
+let t = 0;
+
+function fmtVal(key, v) {
+  if (key === 'tilt') return v.toFixed(1);
+  if (key === 'intensity') return Math.round(v * 100) + '%';
+  if (key === 'cycles') return Math.round(v);
+  return v.toFixed(2);
+}
+
+function setupKnob(id, key) {
+  const cv = document.getElementById(id);
+  const ctx = cv.getContext('2d');
+  let hover = false;
+
+  function draw() {
+    const W = 88, H = 88, dpr = 2;
+    cv.width = W*dpr; cv.height = H*dpr;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, W, H);
+    const cx = 44, cy = 44, r = 32;
+    const [mn, mx] = ranges[key];
+    const norm = (params[key] - mn) / (mx - mn);
+    const startA = Math.PI * 0.75, endA = Math.PI * 2.25;
+    const valA = startA + norm * (endA - startA);
+
+    ctx.beginPath(); ctx.arc(cx, cy, r, startA, endA);
+    ctx.strokeStyle = '#2a2a2a'; ctx.lineWidth = 6; ctx.stroke();
+
+    const isDragging = draggingKey === key;
+    let glowA = 0, glowB = 0;
+    if (hover && !isDragging) { glowA = 0.3; glowB = 7; }
+    if (isDragging) { glowA = 0.38; glowB = 7; }
+    if (glowA > 0) {
+      ctx.save();
+      ctx.shadowColor = `rgba(255,255,255,${glowA})`;
+      ctx.shadowBlur = glowB;
+      ctx.beginPath(); ctx.arc(cx, cy, r + 3, 0, Math.PI * 2);
+      ctx.strokeStyle = `rgba(255,255,255,${glowA * 0.4})`;
+      ctx.lineWidth = 2; ctx.stroke();
+      ctx.restore();
+    }
+
+    // Knob arc uses exact same shared colour state as curve
+    const [cr, cg, cb] = sharedColor;
+    const alpha = isDragging ? 1.0 : lerp(1.0, 0.65, fadeProgress);
+    const arcGlow = isDragging ? 12 : lerp(12, 0, fadeProgress);
+
+    if (arcGlow > 0.4) {
+      ctx.save();
+      ctx.shadowColor = `rgba(${cr},${cg},${cb},0.85)`;
+      ctx.shadowBlur = arcGlow;
+      ctx.beginPath(); ctx.arc(cx, cy, r, startA, valA);
+      ctx.strokeStyle = `rgba(${cr},${cg},${cb},${alpha})`;
+      ctx.lineWidth = 6; ctx.lineCap = 'round'; ctx.stroke();
+      ctx.restore();
+    } else {
+      ctx.beginPath(); ctx.arc(cx, cy, r, startA, valA);
+      ctx.strokeStyle = `rgba(${cr},${cg},${cb},${alpha})`;
+      ctx.lineWidth = 6; ctx.lineCap = 'round'; ctx.stroke();
+    }
+
+    const dotX = cx + Math.cos(valA) * r;
+    const dotY = cy + Math.sin(valA) * r;
+    ctx.beginPath(); ctx.arc(dotX, dotY, 4.5, 0, Math.PI * 2);
+    ctx.fillStyle = isDragging ? `rgb(${cr},${cg},${cb})` : '#fff';
+    ctx.fill();
+
+    document.getElementById(id + 'V').textContent = fmtVal(key, params[key]);
+    requestAnimationFrame(draw);
+  }
+
+  cv.addEventListener('mouseenter', () => hover = true);
+  cv.addEventListener('mouseleave', () => hover = false);
+  cv.addEventListener('mousedown', e => {
+    draggingKey = key;
+    dragStartY = e.clientY;
+    dragStartVal = params[key];
+    fadeProgress = 0;
+    const [mn, mx] = ranges[key];
+    const norm = (params[key] - mn) / (mx - mn);
+    sharedColor = spectrumColor(norm);
+  });
+  cv.addEventListener('touchstart', e => {
+    e.preventDefault();
+    draggingKey = key;
+    dragStartY = e.touches[0].clientY;
+    dragStartVal = params[key];
+    fadeProgress = 0;
+    const [mn, mx] = ranges[key];
+    const norm = (params[key] - mn) / (mx - mn);
+    sharedColor = spectrumColor(norm);
+  }, {passive: false});
+
+  draw();
+}
+
+window.addEventListener('mousemove', e => {
+  if (!draggingKey) return;
+  const [mn, mx] = ranges[draggingKey];
+  const delta = (dragStartY - e.clientY) / 100;
+  const newVal = Math.max(mn, Math.min(mx, dragStartVal + delta * (mx - mn)));
+  params[draggingKey] = newVal;
+  const norm = (newVal - mn) / (mx - mn);
+  sharedColor = spectrumColor(norm);
+  fadeProgress = 0;
+});
+window.addEventListener('mouseup', () => { draggingKey = null; });
+window.addEventListener('touchmove', e => {
+  if (!draggingKey) return;
+  e.preventDefault();
+  const [mn, mx] = ranges[draggingKey];
+  const delta = (dragStartY - e.touches[0].clientY) / 100;
+  const newVal = Math.max(mn, Math.min(mx, dragStartVal + delta * (mx - mn)));
+  params[draggingKey] = newVal;
+  const norm = (newVal - mn) / (mx - mn);
+  sharedColor = spectrumColor(norm);
+  fadeProgress = 0;
+}, {passive: false});
+window.addEventListener('touchend', () => { draggingKey = null; });
+
+setupKnob('kTilt',  'tilt');
+setupKnob('kInt',   'intensity');
+setupKnob('kCyc',  'cycles');
+
+function simSpec(bins) {
+  const s = new Float32Array(bins);
+  for (let i = 0; i < bins; i++) {
+    const f = Math.pow(i / (bins - 1), 0.4);
+    let v = 0;
+    v += Math.exp(-Math.pow(f - .07, 2) / .003) * .95;
+    v += Math.exp(-Math.pow(f - .15, 2) / .006) * .60;
+    v += Math.exp(-Math.pow(f - .28, 2) / .010) * .38;
+    v += Math.exp(-Math.pow(f - .45, 2) / .014) * .26;
+    v += Math.max(0, (1 - f * 1.9)) * .10;
+    v += Math.sin(i * 6.1 + t * .02) * .015 + .01;
+    s[i] = Math.min(1, Math.max(0, v));
+  }
+  return s;
+}
+function getCurve(bins) {
+  const scroll = t * .005 * params.cycles * (0.3 / 2) * 4;
+  return Array.from({length: bins}, (_, i) => {
+    const frac = i / (bins - 1), x = frac * 2 - 1;
+    let v = params.tilt * x;
+    v += Math.sin(frac * params.cycles * Math.PI * 2 - scroll) * params.intensity;
+    return Math.max(-1, Math.min(1, v));
+  });
+}
+
+const mc  = document.getElementById('mc');
+const mctx = mc.getContext('2d');
+
+function drawMain() {
+  const W = mc.offsetWidth * devicePixelRatio || 640;
+  const H = 200 * devicePixelRatio;
+  mc.width = W; mc.height = H;
+  mctx.fillStyle = '#080808'; mctx.fillRect(0, 0, W, H);
+
+  const pL = 10*(W/640), pR = 10*(W/640), pT = 16*(H/200), pB = 10*(H/200);
+  const pw = W-pL-pR, ph = H-pT-pB, midY = pT+ph/2, floorY = pT+ph;
+
+  const washG = mctx.createLinearGradient(0, 0, 0, H);
+  washG.addColorStop(0,   'rgba(120,30,160,0.11)');
+  washG.addColorStop(0.5, 'rgba(60,15,80,0.015)');
+  washG.addColorStop(1,   'rgba(120,30,160,0.08)');
+  mctx.fillStyle = washG; mctx.fillRect(2, 2, W-4, H-4);
+
+  mctx.strokeStyle = '#111'; mctx.lineWidth = .5;
+  mctx.beginPath(); mctx.moveTo(pL, midY); mctx.lineTo(pL+pw, midY); mctx.stroke();
+  [.25, .5, .75].forEach(f => {
+    mctx.strokeStyle = '#0d0d0d'; mctx.lineWidth = .5;
+    mctx.beginPath(); mctx.moveTo(pL+f*pw, pT); mctx.lineTo(pL+f*pw, pT+ph); mctx.stroke();
+  });
+
+  const BINS = 200;
+  const spec = simSpec(BINS);
+  const peakH = ph * 0.5;
+  mctx.beginPath(); mctx.moveTo(pL, floorY);
+  for (let i = 0; i < BINS; i++) {
+    const x = pL + (i/(BINS-1))*pw, y = floorY - spec[i]*peakH;
+    mctx.lineTo(x, y);
+  }
+  mctx.lineTo(pL+pw, floorY); mctx.closePath();
+  mctx.fillStyle = 'rgba(190,190,195,0.15)'; mctx.fill();
+  mctx.beginPath();
+  for (let i = 0; i < BINS; i++) {
+    const x = pL + (i/(BINS-1))*pw, y = floorY - spec[i]*peakH;
+    i === 0 ? mctx.moveTo(x, y) : mctx.lineTo(x, y);
+  }
+  mctx.strokeStyle = 'rgba(205,205,210,0.5)'; mctx.lineWidth = .8; mctx.stroke();
+
+  const curve = getCurve(BINS);
+  const bw = Math.max(1, pw/BINS - .2);
+
+  // Advance shared fade — happens once per frame, governs everything
+  if (!draggingKey) {
+    fadeProgress = Math.min(1, fadeProgress + FADE_SPEED);
+  }
+  const [cr, cg, cb] = draggingKey
+    ? sharedColor
+    : lerpColor(sharedColor, PURPLE, fadeProgress);
+
+  const isDragging = draggingKey !== null;
+  const curveAlpha  = isDragging ? 1.0 : lerp(1.0, 0.88, fadeProgress);
+  // Glow is much stronger now — 28px while active, fades fully to 0
+  const curveGlow   = isDragging ? 28  : lerp(28, 0, fadeProgress);
+  const binAlpha    = isDragging ? 1.0 : lerp(1.0, 0.65, fadeProgress);
+
+  // Frequency bin colouring uses same colour
+  curve.forEach((pan, i) => {
+    const x = pL + (i/(BINS-1))*pw, np = (pan+1)/2;
+    mctx.fillStyle = `rgba(${cr},${Math.round(cg*0.3)},${cb},${(.18+Math.abs(pan)*.28)*binAlpha})`;
+    const bh = Math.max(1.5, Math.abs(pan)*ph*.4+1);
+    mctx.fillRect(x, midY-bh/2, bw, bh);
+  });
+
+  // Outer glow halo — wide soft bloom behind the line
+  if (curveGlow > 0.5) {
+    mctx.save();
+    mctx.shadowColor = `rgba(${cr},${cg},${cb},0.5)`;
+    mctx.shadowBlur  = curveGlow * 1.8;
+    mctx.beginPath();
+    curve.forEach((pan, i) => {
+      const x = pL+(i/(BINS-1))*pw, y = midY-pan*ph*.4;
+      i === 0 ? mctx.moveTo(x, y) : mctx.lineTo(x, y);
+    });
+    mctx.strokeStyle = `rgba(${cr},${cg},${cb},0.22)`;
+    mctx.lineWidth = 14;
+    mctx.stroke();
+    mctx.restore();
+  }
+
+  // Inner glow — tighter, brighter
+  if (curveGlow > 0.5) {
+    mctx.save();
+    mctx.shadowColor = `rgba(${cr},${cg},${cb},0.9)`;
+    mctx.shadowBlur  = curveGlow * 0.7;
+    mctx.beginPath();
+    curve.forEach((pan, i) => {
+      const x = pL+(i/(BINS-1))*pw, y = midY-pan*ph*.4;
+      i === 0 ? mctx.moveTo(x, y) : mctx.lineTo(x, y);
+    });
+    mctx.strokeStyle = `rgba(${cr},${cg},${cb},${curveAlpha})`;
+    mctx.lineWidth = 2.2;
+    mctx.stroke();
+    mctx.restore();
+  } else {
+    mctx.beginPath();
+    curve.forEach((pan, i) => {
+      const x = pL+(i/(BINS-1))*pw, y = midY-pan*ph*.4;
+      i === 0 ? mctx.moveTo(x, y) : mctx.lineTo(x, y);
+    });
+    mctx.strokeStyle = `rgba(${cr},${cg},${cb},${curveAlpha})`;
+    mctx.lineWidth = 2;
+    mctx.stroke();
+  }
+
+  // White shimmer on top — present while active, fades with glow
+  const shimmerAlpha = lerp(0, 0.55, 1 - fadeProgress);
+  if (shimmerAlpha > 0.01) {
+    mctx.beginPath();
+    curve.forEach((pan, i) => {
+      const x = pL+(i/(BINS-1))*pw, y = midY-pan*ph*.4;
+      i === 0 ? mctx.moveTo(x, y) : mctx.lineTo(x, y);
+    });
+    mctx.strokeStyle = `rgba(255,255,255,${shimmerAlpha})`;
+    mctx.lineWidth = 0.8;
+    mctx.stroke();
+  }
+
+  mctx.font = `${8*(H/200)}px monospace`;
+  mctx.fillStyle = 'rgba(255,255,255,0.78)';
+  mctx.textAlign = 'left';
+  mctx.fillText('R', pL+3, pT+11);
+  mctx.fillText('L', pL+3, pT+ph-3);
+
+  t++;
+  requestAnimationFrame(drawMain);
+}
+drawMain();
+</script>
