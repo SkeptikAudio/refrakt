@@ -182,4 +182,31 @@ namespace RefraktCurveMath
         }
         return p;
     }
+
+    // Fills zero/missing buckets by interpolating between the nearest buckets
+    // that DID have real data on either side (or nearest-neighbour if only
+    // one side has data). `hasData[i]==false` buckets are overwritten in
+    // `vals`; buckets with `hasData[i]==true` are read-only inputs and never
+    // touched. Shared by PluginProcessor's UI-spectrum path and its test
+    // suite — see the low-frequency bucket-starvation note where this is
+    // called from computeBinGains equivalent in PluginProcessor.cpp.
+    inline void fillSpectrumGaps (float* vals, const bool* hasData, int count)
+    {
+        for (int i = 0; i < count; ++i)
+        {
+            if (hasData[i]) continue;
+            int left = i - 1;
+            while (left >= 0 && ! hasData[left]) --left;
+            int right = i + 1;
+            while (right < count && ! hasData[right]) ++right;
+            if (left >= 0 && right < count)
+            {
+                const float t = (float) (i - left) / (float) (right - left);
+                vals[i] = vals[left] + (vals[right] - vals[left]) * t;
+            }
+            else if (left >= 0) vals[i] = vals[left];
+            else if (right < count) vals[i] = vals[right];
+            // else: no bucket anywhere had data (true silence) — stays whatever it was (0), correctly.
+        }
+    }
 }

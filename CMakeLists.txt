@@ -75,3 +75,54 @@ target_link_libraries(Refrakt PRIVATE
     juce::juce_recommended_lto_flags
     juce::juce_recommended_warning_flags
 )
+
+# Regression suite for CurveMath.h — the pure DSP/curve math that produced
+# several bugs this project only ever caught by eye (pivot spike, ping-pong
+# jerk, bass-bucket starvation). Standalone executable, no plugin/DAW needed,
+# just juce_core for the math helpers CurveMath.h itself depends on.
+enable_testing()
+add_executable(RefraktTests Tests/CurveMathTests.cpp)
+target_compile_definitions(RefraktTests PRIVATE JUCE_STANDALONE_APPLICATION=1)
+target_link_libraries(RefraktTests PRIVATE juce::juce_core)
+add_test(NAME CurveMathTests COMMAND RefraktTests)
+
+# Headless sample-rate / buffer-size sweep, driving the real RefraktProcessor
+# (not a reimplementation) directly through processBlock — no DAW, no
+# editor window. Compiles PluginProcessor.cpp/PluginEditor.cpp/Presets.cpp
+# same as the plugin itself (createEditor() ties them together at link time)
+# so this mirrors production code exactly, it just never constructs the
+# editor at runtime.
+add_executable(RefraktAudioTests
+    Tests/AudioProcessingTests.cpp
+    Source/PluginProcessor.cpp
+    Source/PluginEditor.cpp
+    Source/Presets.cpp
+)
+target_link_libraries(RefraktAudioTests PRIVATE RefraktData)
+target_compile_definitions(RefraktAudioTests PRIVATE
+    JUCE_STANDALONE_APPLICATION=1
+    JUCE_WEB_BROWSER=1
+    JUCE_USE_WIN_WEBVIEW2_WITH_STATIC_LINKING=1
+    JUCE_USE_CURL=0
+    JUCE_DISPLAY_SPLASH_SCREEN=0
+)
+target_link_libraries(RefraktAudioTests PRIVATE
+    juce::juce_audio_utils
+    juce::juce_dsp
+    juce::juce_graphics
+    juce::juce_gui_basics
+    juce::juce_gui_extra
+    juce::juce_audio_processors
+)
+if(WIN32)
+    # juce_add_plugin(... NEEDS_WEBVIEW2 TRUE) wires this into the Refrakt
+    # target automatically (including putting FindWebView2.cmake on the
+    # module path); a plain add_executable needs both done by hand since
+    # PluginEditor.cpp (WebBrowserComponent) is compiled into this too.
+    list(APPEND CMAKE_MODULE_PATH "${juce_SOURCE_DIR}/extras/Build/CMake")
+    find_package(WebView2 MODULE)
+    if(TARGET juce::juce_webview2)
+        target_link_libraries(RefraktAudioTests PRIVATE juce::juce_webview2)
+    endif()
+endif()
+add_test(NAME AudioProcessingTests COMMAND RefraktAudioTests)

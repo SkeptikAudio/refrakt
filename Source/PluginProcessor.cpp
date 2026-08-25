@@ -133,6 +133,17 @@ void RefraktProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     lfoPhaseAccum = 0.0;
     cycleScrollAccum = 0.0;
 
+    // 20ms ramp — long enough to kill block-boundary zipper on fast
+    // automation, short enough to stay inaudible as a fade on a deliberate
+    // knob move. Snap to whatever's currently set, not 0, so prepareToPlay
+    // (e.g. a sample-rate change mid-session) never causes its own fade-in.
+    gainSmoothed.reset (sampleRate, 0.02);
+    mixSmoothed.reset (sampleRate, 0.02);
+    const float initialGainDb = *apvts.getRawParameterValue ("output_gain");
+    const float initialMix = *apvts.getRawParameterValue ("mix");
+    gainSmoothed.setCurrentAndTargetValue (juce::Decibels::decibelsToGain (initialGainDb));
+    mixSmoothed.setCurrentAndTargetValue (initialMix);
+
     // Total round-trip latency of an overlap-add STFT is exactly one
     // analysis window. Reported via the standard host API so every DAW
     // applies plugin-delay-compensation automatically — nothing for the
@@ -364,25 +375,9 @@ void RefraktProcessor::processFFTFrame()
         // available below ~100Hz (only a handful of linear bins cover
         // 20-100Hz), leaving most low buckets with zero contributing bins.
         // Left at 0 they read as "no bass" even when there plainly is
-        // some — it's a resolution mismatch, not silence. Fill the gaps by
-        // interpolating between the nearest buckets that DID measure real
-        // bins, rather than leaving a run of false zeros.
-        for (int i = 0; i < kUiSpectrumBins; ++i)
-        {
-            if (hasData[(size_t) i]) continue;
-            int left = i - 1;
-            while (left >= 0 && ! hasData[(size_t) left]) --left;
-            int right = i + 1;
-            while (right < kUiSpectrumBins && ! hasData[(size_t) right]) ++right;
-            if (left >= 0 && right < kUiSpectrumBins)
-            {
-                const float t = (float) (i - left) / (float) (right - left);
-                bucketAvg[(size_t) i] = bucketAvg[(size_t) left] + (bucketAvg[(size_t) right] - bucketAvg[(size_t) left]) * t;
-            }
-            else if (left >= 0) bucketAvg[(size_t) i] = bucketAvg[(size_t) left];
-            else if (right < kUiSpectrumBins) bucketAvg[(size_t) i] = bucketAvg[(size_t) right];
-            // else: no bucket anywhere had data this hop (true silence) — stays 0, correctly.
-        }
+        // some — it's a resolution mismatch, not silence. Fill the gaps
+        // (see fillSpectrumGaps, unit-tested in Tests/CurveMathTests.cpp).
+        fillSpectrumGaps (bucketAvg.data(), hasData.data(), kUiSpectrumBins);
 
         // Normalized by fftSize (which changes with sample rate — see
         // pickFftOrder) so a downstream dB conversion doesn't need to know
@@ -483,8 +478,8 @@ void RefraktProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     }
 
     const float outputGainDb = *apvts.getRawParameterValue ("output_gain");
-    const float gainLin = juce::Decibels::decibelsToGain (outputGainDb);
-    const float mix = *apvts.getRawParameterValue ("mix");
+    gainSmoothed.setTargetValue (juce::Decibels::decibelsToGain (outputGainDb));
+    mixSmoothed.setTargetValue (*apvts.getRawParameterValue ("mix"));
 
     float meterPkL = 0.0f, meterPkR = 0.0f, meterSumLR = 0.0f, meterSumLL = 0.0f, meterSumRR = 0.0f;
 
@@ -513,8 +508,10 @@ void RefraktProcessor::processBlock (juce::AudioBuffer<float>& buffer,
         const float wetL = mOutL + sDelayed;
         const float wetR = mOutR - sDelayed;
 
-        outL[i] = (wetL * mix + dryLDelay * (1.0f - mix)) * gainLin;
-        outR[i] = (wetR * mix + dryRDelay * (1.0f - mix)) * gainLin;
+        const float mixNow = mixSmoothed.getNextValue();
+        const float gainNow = gainSmoothed.getNextValue();
+        outL[i] = (wetL * mixNow + dryLDelay * (1.0f - mixNow)) * gainNow;
+        outR[i] = (wetR * mixNow + dryRDelay * (1.0f - mixNow)) * gainNow;
 
         meterPkL = juce::jmax (meterPkL, std::abs (outL[i]));
         meterPkR = juce::jmax (meterPkR, std::abs (outR[i]));

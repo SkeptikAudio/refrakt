@@ -30,6 +30,9 @@ jobs:
       - name: Build
         run: cmake --build Build --config Release --parallel
 
+      - name: Run DSP regression tests
+        run: ctest --test-dir Build -C Release --output-on-failure
+
       - name: Upload VST3
         uses: actions/upload-artifact@v4
         with:
@@ -48,6 +51,9 @@ jobs:
 
       - name: Build
         run: cmake --build Build --config Release --parallel
+
+      - name: Run DSP regression tests
+        run: ctest --test-dir Build -C Release --output-on-failure
 
       - name: Upload VST3
         uses: actions/upload-artifact@v4

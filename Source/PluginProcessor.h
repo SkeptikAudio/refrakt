@@ -181,6 +181,15 @@ private:
     // not per-sample gain interpolation on top of what overlap-add already gives.
     std::vector<float> binGainL, binGainR; // reused every hop — never (re)allocated on the audio thread
 
+    // Output Gain and Mix are read once per BLOCK (unlike the per-hop bin
+    // gains, which get their smoothing for free from the FFT overlap-add
+    // crossfade — see the comment on binGainL/R above). Applied flat with no
+    // smoothing, a host automating either fast enough to change value
+    // between blocks previously produced a hard step at the block boundary
+    // — audible as a click/zipper, worst-case with small block sizes where
+    // block boundaries are frequent. Ramped per-sample instead now.
+    juce::SmoothedValue<float> gainSmoothed, mixSmoothed;
+
     // Bin-frequency mapping (binFrac) is a pure function of (bin index,
     // fftSize, sampleRate) — none of which change between hops — so it's
     // computed once here instead of twice per bin (two log10 calls), every
