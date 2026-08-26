@@ -12,6 +12,19 @@ namespace
     // fallback) — flagged rather than silently deferred.
     const juce::File kUiFile { "C:/Projects/Refrakt/Source/ui/public/index.html" };
 
+    // WebView2 needs a writable folder for its own profile data. Left
+    // unspecified, it defaults to a location relative to the HOST
+    // executable (e.g. FL64.exe under Program Files) — not writable by a
+    // standard user, which makes environment creation fail. Shared by the
+    // real webView construction below AND the areOptionsSupported() runtime
+    // check in the constructor body, so the check actually reflects reality
+    // instead of failing on a default the real construction never uses.
+    juce::File getWebView2UserDataFolder()
+    {
+        return juce::File::getSpecialLocation (juce::File::SpecialLocationType::userApplicationDataDirectory)
+            .getChildFile ("SkeptikAudio").getChildFile ("Refrakt").getChildFile ("WebView2");
+    }
+
     // Every APVTS param the web UI can read/write, and how the "setState"
     // native function's values map onto them. Kept as one list so both the
     // outgoing (APVTS -> JS) and incoming (JS -> APVTS) directions stay in
@@ -43,8 +56,7 @@ RefraktEditor::RefraktEditor (RefraktProcessor& p)
       webView (juce::WebBrowserComponent::Options{}
                    .withBackend (juce::WebBrowserComponent::Options::Backend::webview2)
                    .withWinWebView2Options (juce::WebBrowserComponent::Options::WinWebView2{}
-                                                 .withUserDataFolder (juce::File::getSpecialLocation (juce::File::SpecialLocationType::userApplicationDataDirectory)
-                                                                           .getChildFile ("SkeptikAudio").getChildFile ("Refrakt").getChildFile ("WebView2")))
+                                                 .withUserDataFolder (getWebView2UserDataFolder()))
                    .withNativeIntegrationEnabled()
                    .withNativeFunction ("setState", [this] (const juce::Array<juce::var>& args, juce::WebBrowserComponent::NativeFunctionCompletion complete)
                        { handleSetParam (args, std::move (complete)); })
@@ -62,6 +74,38 @@ RefraktEditor::RefraktEditor (RefraktProcessor& p)
                        { handleReportContentSize (args, std::move (complete)); })
                    .withResourceProvider ([this] (const auto& url) { return getResource (url); }))
 {
+   #if JUCE_WINDOWS
+    webView2RuntimeAvailable = juce::WebBrowserComponent::areOptionsSupported (
+        juce::WebBrowserComponent::Options{}
+            .withBackend (juce::WebBrowserComponent::Options::Backend::webview2)
+            .withWinWebView2Options (juce::WebBrowserComponent::Options::WinWebView2{}
+                                          .withUserDataFolder (getWebView2UserDataFolder())));
+   #endif
+
+    if (! webView2RuntimeAvailable)
+    {
+        // Don't even try to load the UI into a browser backend that isn't
+        // actually there — leave webView inert and hidden, show a plain,
+        // actionable message instead of a silently blank plugin window.
+        missingRuntimeLabel.setText (
+            "Refrakt needs the Microsoft Edge WebView2 Runtime, which isn't "
+            "installed on this system.\n\nInstall it (free, from Microsoft), "
+            "then reopen this plugin:",
+            juce::dontSendNotification);
+        missingRuntimeLabel.setJustificationType (juce::Justification::centred);
+        missingRuntimeLabel.setColour (juce::Label::textColourId, juce::Colours::white);
+        addAndMakeVisible (missingRuntimeLabel);
+
+        missingRuntimeLink = std::make_unique<juce::HyperlinkButton> (
+            "Download WebView2 Runtime",
+            juce::URL ("https://go.microsoft.com/fwlink/p/?LinkId=2124703"));
+        addAndMakeVisible (*missingRuntimeLink);
+
+        setSize (baseWidth, baseHeight);
+        setResizable (false, false);
+        return;
+    }
+
     loadUserPresetsFromDisk();
 
     addAndMakeVisible (webView);
@@ -132,6 +176,15 @@ RefraktEditor::~RefraktEditor() { stopTimer(); }
 
 void RefraktEditor::resized()
 {
+    if (! webView2RuntimeAvailable)
+    {
+        auto bounds = getLocalBounds().reduced (20);
+        missingRuntimeLabel.setBounds (bounds.removeFromTop (bounds.getHeight() - 30));
+        if (missingRuntimeLink != nullptr)
+            missingRuntimeLink->setBounds (bounds);
+        return;
+    }
+
     if (getWidth() != targetWidth || getHeight() != targetHeight)
     {
         setSize (targetWidth, targetHeight); // triggers resized() again with the corrected size
@@ -268,13 +321,18 @@ void RefraktEditor::handleSetScale (const juce::Array<juce::var>& args, juce::We
 // below the last row when the guess didn't match reality.
 void RefraktEditor::handleReportContentSize (const juce::Array<juce::var>& args, juce::WebBrowserComponent::NativeFunctionCompletion complete)
 {
-    const int receivedW = args.size() >= 1 ? (int) args[0] : -1;
     const int receivedH = args.size() >= 2 ? (int) args[1] : -1;
     if (args.size() >= 2)
     {
         const double dpiComp = getDpiCompensation();
-        const int w = juce::roundToInt ((double) receivedW / dpiComp);
+        // Width uses the known design constant, not the received value —
+        // see kDesignWidth's comment in the header for why .plugin's own
+        // measured width can't be used here (it's self-referential in
+        // embedded mode). Height's received value stays genuinely useful
+        // (children's fixed-px heights aren't viewport-relative).
+        const int w = juce::roundToInt ((double) kDesignWidth / dpiComp);
         const int h = juce::roundToInt ((double) receivedH / dpiComp);
+
         if (w > 0 && h > 0 && (w != baseWidth || h != baseHeight))
         {
             baseWidth = w; baseHeight = h;

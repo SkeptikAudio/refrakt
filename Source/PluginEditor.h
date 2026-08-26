@@ -86,7 +86,34 @@ private:
 
     SinglePageBrowser webView;
 
+    // On Windows, WebBrowserComponent's webview2 backend needs the Edge
+    // WebView2 Runtime installed as a separate OS component — we only
+    // statically link its LOADER (see CMakeLists.txt), not the runtime
+    // itself. A machine missing it previously just showed a blank plugin
+    // window with no explanation. Checked once at construction; if absent,
+    // webView is hidden and this label shown instead. Always present but
+    // only made visible in that case — see the constructor and resized().
+    std::unique_ptr<juce::HyperlinkButton> missingRuntimeLink;
+    juce::Label missingRuntimeLabel;
+    bool webView2RuntimeAvailable = true;
+
     std::unordered_map<juce::String, float> lastKnownParamValues;
+
+    // The mockup's non-embedded .plugin width is a fixed 940px — but in
+    // embedded mode (see index.html's `body.embedded .plugin{width:100%}`)
+    // .plugin stretches to fill whatever viewport WebView2 actually renders,
+    // so measuring ITS width and feeding it back into the DPI-compensation
+    // formula is circular: the measurement already reflects the very
+    // distortion being corrected for, which makes the "correction" a no-op
+    // every time regardless of scale (confirmed empirically at 100% scale —
+    // content read as clipped even though the formula reported no change
+    // needed). Height doesn't have this problem: contentH sums CHILD
+    // elements' fixed-px heights, which stay constant regardless of
+    // viewport/scale, so it's a genuine independent measurement the
+    // compensation formula can correct against. Width needs the same kind
+    // of stable reference — this constant IS that reference, standing in
+    // for the (otherwise self-referential) width measurement.
+    static constexpr int kDesignWidth = 940;
 
     // Base (100%) content size — starts as a hardcoded guess (the mockup's
     // .plugin is a fixed 940px-wide layout, height was estimated) and gets
