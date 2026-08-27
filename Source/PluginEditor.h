@@ -45,6 +45,7 @@ private:
     void handleSaveUserPreset (const juce::Array<juce::var>& args, juce::WebBrowserComponent::NativeFunctionCompletion complete);
     void handleDeleteUserPreset (const juce::Array<juce::var>& args, juce::WebBrowserComponent::NativeFunctionCompletion complete);
     void handleReportContentSize (const juce::Array<juce::var>& args, juce::WebBrowserComponent::NativeFunctionCompletion complete);
+    void handleSetSoloTarget (const juce::Array<juce::var>& args, juce::WebBrowserComponent::NativeFunctionCompletion complete);
 
     std::optional<juce::WebBrowserComponent::Resource> getResource (const juce::String& url);
 

@@ -153,6 +153,44 @@ static void testGetProtection()
     }
 }
 
+static void testGetSoloMask()
+{
+    std::vector<TestZone> zones = { { 0.4, 0.6 }, { 0.8, 0.9 } };
+
+    // No solo active -> nothing muted anywhere.
+    for (double frac = 0.0; frac <= 1.0; frac += 0.1)
+        CHECK_NEAR(getSoloMask (frac, -1, true, 0.2, zones, 2), 1.0, 1e-9);
+
+    // Safe Bass solo (-2): inside its band untouched, outside silenced.
+    CHECK_NEAR(getSoloMask (0.05, -2, true, 0.2, zones, 2), 1.0, 1e-9);
+    CHECK_NEAR(getSoloMask (0.5, -2, true, 0.2, zones, 2), 0.0, 1e-9);
+
+    // Safe Bass solo requested but Safe Bass itself is off -> fails open
+    // (no muting) rather than silencing the whole mix on stale state.
+    CHECK_NEAR(getSoloMask (0.05, -2, false, 0.2, zones, 2), 1.0, 1e-9);
+
+    // Zone solo (index 0 = the 0.4-0.6 band): inside untouched, outside silenced.
+    CHECK_NEAR(getSoloMask (0.5, 0, true, 0.2, zones, 2), 1.0, 1e-9);
+    CHECK_NEAR(getSoloMask (0.05, 0, true, 0.2, zones, 2), 0.0, 1e-9); // even Safe Bass's own range is silenced when a zone is soloed
+    CHECK_NEAR(getSoloMask (0.85, 0, true, 0.2, zones, 2), 0.0, 1e-9); // the OTHER zone is silenced too
+
+    // Out-of-range zone index (e.g. deleted while solo was active) -> fails
+    // open, never silences everything.
+    CHECK_NEAR(getSoloMask (0.5, 5, true, 0.2, zones, 2), 1.0, 1e-9);
+
+    // Always bounded [0,1], and the edge fade is smooth (no discontinuity
+    // bigger than the step itself) crossing a zone boundary.
+    double prev = getSoloMask (0.3, 0, true, 0.2, zones, 2);
+    const double step = 0.001;
+    for (double frac = 0.3; frac <= 0.7; frac += step)
+    {
+        const double m = getSoloMask (frac, 0, true, 0.2, zones, 2);
+        CHECK(m >= -1e-9 && m <= 1.0 + 1e-9);
+        CHECK(std::abs (m - prev) < step / kSoloSnap * 1.5 + 1e-6);
+        prev = m;
+    }
+}
+
 static void testFillSpectrumGaps()
 {
     // All buckets already have data -> untouched.
@@ -242,6 +280,7 @@ int main()
     testTiltShapeAt();
     testNodeInfluence();
     testGetProtection();
+    testGetSoloMask();
     testFillSpectrumGaps();
     testLfoWaveformContinuity();
 

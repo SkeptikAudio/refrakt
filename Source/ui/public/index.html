@@ -943,6 +943,7 @@ function toggleBypass(){
 function toggleSafeBass(){
   pushUndo();
   safeBassOn=!safeBassOn;
+  if(!safeBassOn&&soloZone==='safebass')soloZone=null; // otherwise re-enabling later silently resumes a solo nobody asked for
   document.getElementById('safeBassBtn').classList.toggle('on',safeBassOn);
 }
 function fmtVal(key,v){
@@ -1678,6 +1679,7 @@ mc.addEventListener('mousedown',e=>{
   if(sbTrash){
     pushUndo();
     safeBassOn=false;
+    if(soloZone==='safebass')soloZone=null; // otherwise re-enabling Safe Bass later silently resumes a solo nobody asked for
     document.getElementById('safeBassBtn').classList.remove('on');
     return;
   }
@@ -2368,6 +2370,7 @@ requestAnimationFrame(draw);
   window.__refraktSavePreset = getNativeFn('saveUserPreset');
   window.__refraktDeletePreset = getNativeFn('deleteUserPreset');
   window.__refraktReportContentSize = getNativeFn('reportContentSize');
+  window.__refraktSetSoloTarget = getNativeFn('setSoloTarget');
 
   // JS internal state -> APVTS param IDs/units. pivot and safe-bass-hi are
   // stored as 0-1 log-frequency fracs in JS but as raw Hz in the DSP —
@@ -2418,6 +2421,7 @@ requestAnimationFrame(draw);
 
   let lastSyncedSnapshot = null;
   let lastSyncedShapeJson = '';
+  let lastSyncedSolo = null; // deliberately not -1: forces the real initial value out on the very first sync tick
   // Guards against a startup race: draw()'s loop calls syncOutgoingState()
   // every frame starting immediately on page load, but the REAL current
   // state only arrives from C++ on the next timer tick (~33ms later, via
@@ -2447,6 +2451,14 @@ requestAnimationFrame(draw);
     if(shapeJson !== lastSyncedShapeJson){
       lastSyncedShapeJson = shapeJson;
       window.__refraktSetCustomShape(nodes.map(n=>({freq:n.freq,pan:n.pan,q:n.q})), zones.map(z=>({lo:z.lo,hi:z.hi})));
+    }
+
+    // soloZone: null/'safebass'/an integer zone index -> -1/-2/that index —
+    // see getSoloMask in CurveMath.h for what these mean on the audio side.
+    const soloTargetOut = soloZone==='safebass' ? -2 : (soloZone===null ? -1 : soloZone);
+    if(soloTargetOut !== lastSyncedSolo){
+      lastSyncedSolo = soloTargetOut;
+      window.__refraktSetSoloTarget(soloTargetOut);
     }
   };
 

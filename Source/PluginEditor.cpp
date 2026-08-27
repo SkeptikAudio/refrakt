@@ -72,6 +72,8 @@ RefraktEditor::RefraktEditor (RefraktProcessor& p)
                        { handleDeleteUserPreset (args, std::move (complete)); })
                    .withNativeFunction ("reportContentSize", [this] (const juce::Array<juce::var>& args, juce::WebBrowserComponent::NativeFunctionCompletion complete)
                        { handleReportContentSize (args, std::move (complete)); })
+                   .withNativeFunction ("setSoloTarget", [this] (const juce::Array<juce::var>& args, juce::WebBrowserComponent::NativeFunctionCompletion complete)
+                       { handleSetSoloTarget (args, std::move (complete)); })
                    .withResourceProvider ([this] (const auto& url) { return getResource (url); }))
 {
    #if JUCE_WINDOWS
@@ -285,6 +287,13 @@ void RefraktEditor::handleSetCustomShape (const juce::Array<juce::var>& args, ju
                 zones.push_back ({ (float) o->getProperty ("lo"), (float) o->getProperty ("hi") });
 
     audioProcessor.setCustomShapeState (nodes, zones);
+    complete ({});
+}
+
+void RefraktEditor::handleSetSoloTarget (const juce::Array<juce::var>& args, juce::WebBrowserComponent::NativeFunctionCompletion complete)
+{
+    const int target = args.size() >= 1 ? (int) args[0] : -1;
+    audioProcessor.setSoloTarget (target);
     complete ({});
 }
 

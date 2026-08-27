@@ -498,6 +498,68 @@ static void runCpuProfilingReport()
     CHECK (maxParallelWall < baselineWall * 3.0);
 }
 
+// --- Solo real-audio isolation check -----------------------------------
+// getSoloMask (CurveMathTests.cpp) already covers the pure math; this
+// verifies it actually reaches the real audio path end-to-end. Twin
+// processors, identical mono broadband noise (mono so the side channel is
+// exactly zero and solo's effect isn't diluted by untouched side content —
+// solo only ever touches the repositionable mid path, consistent with
+// every other feature in this plugin) — one left alone, one with a narrow
+// zone soloed. Soloing must visibly cut total output energy versus the
+// unsoloed baseline on the identical input.
+static void runSoloAudioIsolationCheck()
+{
+    const double sampleRate = 44100.0;
+    const int blockSize = 512;
+    const int fftSize = 2048;
+
+    RefraktProcessor baseline, soloed;
+    for (auto* p : { &baseline, &soloed })
+    {
+        p->setPlayConfigDetails (2, 2, sampleRate, blockSize);
+        p->prepareToPlay (sampleRate, blockSize);
+        setParam (p->apvts, "mix", 1.0f);
+        setParam (p->apvts, "output_gain", 0.0f);
+    }
+    soloed.setCustomShapeState ({}, { { 0.55f, 0.65f } });
+    soloed.setSoloTarget (0);
+
+    std::mt19937 rng (99);
+    std::uniform_real_distribution<float> dist (-0.4f, 0.4f);
+    juce::MidiBuffer midi;
+
+    double sumSqBaseline = 0.0, sumSqSoloed = 0.0;
+    const int totalSamples = fftSize * 12;
+    int samplesRun = 0;
+    while (samplesRun < totalSamples)
+    {
+        juce::AudioBuffer<float> bufA (2, blockSize), bufB (2, blockSize);
+        for (int i = 0; i < blockSize; ++i)
+        {
+            const float s = dist (rng); // identical L/R -> side channel is exactly zero
+            bufA.setSample (0, i, s); bufA.setSample (1, i, s);
+            bufB.setSample (0, i, s); bufB.setSample (1, i, s);
+        }
+        baseline.processBlock (bufA, midi);
+        soloed.processBlock (bufB, midi);
+
+        if (samplesRun > fftSize * 2) // past the FFT's initial fill/latency window
+        {
+            for (int i = 0; i < blockSize; ++i)
+            {
+                const float a = bufA.getReadPointer (0)[i];
+                const float b = bufB.getReadPointer (0)[i];
+                sumSqBaseline += (double) a * a;
+                sumSqSoloed += (double) b * b;
+            }
+        }
+        samplesRun += blockSize;
+    }
+
+    CHECK (sumSqBaseline > 0.0); // sanity: baseline actually produced audible output
+    CHECK (sumSqSoloed < sumSqBaseline * 0.5); // soloing a narrow zone must dramatically cut total energy
+}
+
 int main()
 {
     juce::ScopedJuceInitialiser_GUI juceInit;
@@ -532,6 +594,8 @@ int main()
     runGainAutomationZipperCheck();
 
     runCpuProfilingReport();
+
+    runSoloAudioIsolationCheck();
 
     std::printf ("%d/%d checks passed\n", checks - failures, checks);
     return failures == 0 ? 0 : 1;

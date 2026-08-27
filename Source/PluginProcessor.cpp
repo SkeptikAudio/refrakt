@@ -186,6 +186,7 @@ void RefraktProcessor::computeBinGains (juce::int64 frameStartSample)
     const float safeBassHz   = *apvts.getRawParameterValue ("safe_bass_freq");
     const double safeBassFrac = hzToFrac ((double) safeBassHz);
     const double warpK = boostToK ((double) *apvts.getRawParameterValue ("pivot_boost"));
+    const int soloTargetLocal = soloTarget.load (std::memory_order_relaxed);
 
     // Tiny fixed-size copy, once per hop — see header comment on customShapeLock.
     std::array<CustomNode, kMaxCustomNodes> nodesLocal {};
@@ -313,8 +314,14 @@ void RefraktProcessor::computeBinGains (juce::int64 frameStartSample)
         // the Static/Transparent case would quietly lose level for no reason.
         const double theta = (pan + 1.0) * (juce::MathConstants<double>::pi / 4.0);
         const double sqrt2 = juce::MathConstants<double>::sqrt2;
-        binGainL[(size_t) bin] = (float) (std::cos (theta) * sqrt2);
-        binGainR[(size_t) bin] = (float) (std::sin (theta) * sqrt2);
+        // Solo silences everything outside the soloed band entirely (unlike
+        // protection above, which only re-centres pan) — scales both
+        // channels' gain together so the pan geometry itself is untouched
+        // inside the soloed region.
+        const double soloMask = getSoloMask (frac, soloTargetLocal, safeBassOn, safeBassFrac, zonesLocal, numZonesLocal);
+
+        binGainL[(size_t) bin] = (float) (std::cos (theta) * sqrt2 * soloMask);
+        binGainR[(size_t) bin] = (float) (std::sin (theta) * sqrt2 * soloMask);
     }
 }
 

@@ -54,6 +54,13 @@ public:
 
     void setCustomShapeState (const std::vector<CustomNode>& nodes, const std::vector<ProtectZone>& zones);
 
+    // Which band (if any) is currently soloed: -1 none, -2 Safe Bass,
+    // 0..kMaxProtectZones-1 a protect zone index — see CurveMath.h's
+    // getSoloMask for how this actually silences everything else. A single
+    // int, written rarely (UI click) and read once per hop, so a plain
+    // atomic is enough — no need for the SpinLock nodes/zones use.
+    void setSoloTarget (int target) { soloTarget.store (target, std::memory_order_relaxed); }
+
     // UI-thread-safe copy for the curve display — same tiny fixed-capacity
     // copy-under-lock as computeBinGains does on the audio thread, just
     // called at UI framerate instead of once per hop.
@@ -205,6 +212,7 @@ private:
     int numCustomNodes { 0 };
     std::array<ProtectZone, kMaxProtectZones> protectZones {};
     int numProtectZones { 0 };
+    std::atomic<int> soloTarget { -1 };
 
     void computeBinGains (juce::int64 frameStartSample);
     void processFFTFrame();

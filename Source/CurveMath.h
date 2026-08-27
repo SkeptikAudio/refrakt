@@ -183,6 +183,40 @@ namespace RefraktCurveMath
         return p;
     }
 
+    // Solo: -1 = none (everything passes untouched), -2 = the Safe Bass
+    // region, 0..N-1 = a protect zone index. Everything OUTSIDE the soloed
+    // band is silenced (both binGainL and binGainR scaled toward 0, not
+    // just re-centred like protection does) so only that band is audible —
+    // same SNAP-wide linear edge fade as getProtection, for the same
+    // reason: a hard 0/1 cut across FFT bins is a brick-wall filter and
+    // rings/leaks at the edge. Fails open (returns 1.0, no muting) for an
+    // out-of-range zone index or a Safe-Bass solo while Safe Bass itself is
+    // off — a stale/orphaned solo target must never silence the whole mix.
+    constexpr double kSoloSnap = 0.025;
+    template <typename ZoneArray>
+    double getSoloMask (double frac, int soloTarget, bool safeBassOn, double safeBassFrac, const ZoneArray& zones, int numZones)
+    {
+        if (soloTarget == -1) return 1.0;
+
+        double lo, hi;
+        if (soloTarget == -2)
+        {
+            if (! safeBassOn) return 1.0;
+            lo = 0.0; hi = safeBassFrac;
+        }
+        else if (soloTarget >= 0 && soloTarget < numZones)
+        {
+            const auto& z = zones[(size_t) soloTarget];
+            lo = (double) z.lo; hi = (double) z.hi;
+        }
+        else return 1.0;
+
+        if (frac >= lo && frac <= hi) return 1.0;
+        if (frac < lo && frac >= lo - kSoloSnap) return (frac - (lo - kSoloSnap)) / kSoloSnap;
+        if (frac > hi && frac <= hi + kSoloSnap) return 1.0 - (frac - hi) / kSoloSnap;
+        return 0.0;
+    }
+
     // Fills zero/missing buckets by interpolating between the nearest buckets
     // that DID have real data on either side (or nearest-neighbour if only
     // one side has data). `hasData[i]==false` buckets are overwritten in
