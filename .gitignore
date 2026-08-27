@@ -3,6 +3,9 @@ Build/
 build/
 out/
 
+# Packaged tester downloads — regenerated per release, not source
+dist/
+
 # IDE/editor cruft
 .vs/
 .vscode/
