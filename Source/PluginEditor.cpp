@@ -212,6 +212,21 @@ void RefraktEditor::timerCallback()
     if (getWidth() != targetWidth || getHeight() != targetHeight)
         setSize (targetWidth, targetHeight);
 
+    // The plugin window moved to a monitor with a different DPI/scale since
+    // the last size correction (e.g. dragged there, or the host reopened it
+    // on whichever monitor it now lives on) — re-measure so the correction
+    // in handleReportContentSize is re-derived for the new monitor instead
+    // of staying stuck at whatever the old one needed.
+    if (auto* peer = getPeer())
+    {
+        const double currentScale = peer->getPlatformScaleFactor();
+        if (currentScale > 0.01 && ! juce::approximatelyEqual (currentScale, lastKnownPeerScale))
+        {
+            lastKnownPeerScale = currentScale;
+            webView.emitEventIfBrowserIsVisible ("remeasure", juce::var());
+        }
+    }
+
     auto* obj = new juce::DynamicObject();
     bool anyChanged = false;
 
@@ -323,24 +338,47 @@ void RefraktEditor::handleSetScale (const juce::Array<juce::var>& args, juce::We
     complete ({});
 }
 
-// JS measures .plugin's actual rendered size once at startup (before any
-// scale change, so this is always the true 100% base size) and reports it
-// here — corrects baseWidth/baseHeight away from their hardcoded initial
-// guess, which is what caused either clipped content or a dead black bar
-// below the last row when the guess didn't match reality.
+// JS reports three things: contentH (the real, non-circular content height —
+// see index.html's reportContentSize comment for why .plugin's own box can't
+// be measured directly), and window.innerWidth/innerHeight — the WebView's
+// actual live CSS viewport size for whatever logical size this editor last
+// asked the Component to be (getWidth()/getHeight() at the moment this
+// fires).
+//
+// An earlier version instead divided by a hardcoded "scale/1.5" guess —
+// reverse-engineered from ONE monitor where WebView2 happened to render
+// pages at ~1.1667x whatever logical size JUCE requested. That ratio was
+// never a general fact about WebView2 or DPI scaling, just this one
+// machine's leftover error at one specific display scale (175%) — reported
+// broken exactly as expected on a different monitor, showing up as a dead
+// black bar below the last row (the same wrong-direction symptom the
+// original bug report described, just now caused by the "fix" itself on a
+// monitor the fixed ratio didn't match).
+//
+// Fixed the same way as Konvex's identical bug: measure the real mismatch
+// instead of guessing it. innerWidth/innerHeight are what WebView2 ACTUALLY
+// rendered as its CSS viewport for a requested logical size of getWidth()/
+// getHeight() — their ratio IS this monitor's true JUCE/WebView2 DPI
+// mismatch, on whatever display this happens to be. Width still can't be
+// measured directly (kDesignWidth stands in for it, same as before — see
+// that constant's comment), but height now uses the real measured contentH
+// instead of assuming it's already correct pre-division.
 void RefraktEditor::handleReportContentSize (const juce::Array<juce::var>& args, juce::WebBrowserComponent::NativeFunctionCompletion complete)
 {
-    const int receivedH = args.size() >= 2 ? (int) args[1] : -1;
-    if (args.size() >= 2)
+    if (args.size() >= 3)
     {
-        const double dpiComp = getDpiCompensation();
-        // Width uses the known design constant, not the received value —
-        // see kDesignWidth's comment in the header for why .plugin's own
-        // measured width can't be used here (it's self-referential in
-        // embedded mode). Height's received value stays genuinely useful
-        // (children's fixed-px heights aren't viewport-relative).
-        const int w = juce::roundToInt ((double) kDesignWidth / dpiComp);
-        const int h = juce::roundToInt ((double) receivedH / dpiComp);
+        const double contentH = (double) (int) args[0];
+        const double viewportW = (double) (int) args[1];
+        const double viewportH = (double) (int) args[2];
+
+        const double requestedW = (double) getWidth();
+        const double requestedH = (double) getHeight();
+
+        const double ratioW = (viewportW > 0.5 && requestedW > 0.5) ? viewportW / requestedW : 1.0;
+        const double ratioH = (viewportH > 0.5 && requestedH > 0.5) ? viewportH / requestedH : 1.0;
+
+        const int w = juce::roundToInt ((double) kDesignWidth / ratioW);
+        const int h = juce::roundToInt (contentH / ratioH);
 
         if (w > 0 && h > 0 && (w != baseWidth || h != baseHeight))
         {

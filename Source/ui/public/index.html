@@ -326,35 +326,34 @@ canvas.knob.disabled{opacity:.32;pointer-events:none;cursor:not-allowed}
   const box=document.createElement('div');
   box.id='__refraktErrorOverlay';
   box.style.cssText='display:none;position:fixed;left:0;right:0;bottom:0;max-height:40%;overflow:auto;background:#3a0000;color:#ffb3b3;font:11px monospace;padding:8px;z-index:99999;white-space:pre-wrap;border-top:2px solid #ff4444';
+
+  // Reports the real content height (sum of .plugin's direct children's own
+  // rendered heights, NOT .plugin's own box — .plugin has height:100% so its
+  // own rect is circular, always reporting back whatever height the window
+  // already is) alongside window.innerWidth/innerHeight, the actual live CSS
+  // viewport WebView2 rendered for whatever logical size C++ last asked for.
+  // See handleReportContentSize in PluginEditor.cpp for how the native side
+  // turns these into a corrected window size on any monitor. Exposed on
+  // window so the 'remeasure' backend event (fired when the plugin window
+  // moves to a differently-scaled monitor) can re-run this on demand, not
+  // just once at startup.
+  function reportContentSize(){
+    const el=document.querySelector('.plugin');
+    if(!el||!window.__refraktReportContentSize)return;
+    let contentH=0;
+    for(const child of el.children) contentH+=child.getBoundingClientRect().height;
+    window.__refraktReportContentSize(Math.round(contentH),window.innerWidth,window.innerHeight);
+  }
+  window.__refraktMeasureAndReport=reportContentSize;
+
   document.addEventListener('DOMContentLoaded',()=>{
     document.body.appendChild(box);
     if(window.__JUCE__){
       document.body.classList.add('embedded');
-      // The editor's native window size was a hardcoded guess (kBaseWidth/
-      // kBaseHeight) — any mismatch with .plugin's actual rendered height
-      // showed up as a dead black bar below the last row of content (the
-      // window was simply taller than the page). Measuring the real
-      // content size once, right after the embedded-mode CSS has applied
-      // and layout has settled, and reporting it back lets C++ size the
-      // window to match exactly instead of guessing. Two rAFs to be sure
-      // layout/fonts have settled before measuring; only ever measured at
-      // startup (currentScalePct is always 100 here, before any zoom is
-      // applied), so no zoom-unscaling math is needed.
-      requestAnimationFrame(()=>requestAnimationFrame(()=>{
-        const el=document.querySelector('.plugin');
-        if(el&&window.__refraktReportContentSize){
-          const r=el.getBoundingClientRect();
-          // .plugin itself has height:100% (so its background fills any
-          // leftover space the host insists on) which makes measuring ITS
-          // OWN box circular — it always just reports back whatever the
-          // window already is. Sum the actual content children's real
-          // rendered heights instead, which stay true to the content
-          // regardless of what height .plugin has been stretched to.
-          let contentH=0;
-          for(const child of el.children) contentH+=child.getBoundingClientRect().height;
-          window.__refraktReportContentSize(Math.round(r.width),Math.round(contentH));
-        }
-      }));
+      // Two rAFs to be sure layout/fonts have settled before measuring.
+      // currentScalePct is always 100 here (before any zoom is applied), so
+      // no zoom-unscaling math is needed on the JS side.
+      requestAnimationFrame(()=>requestAnimationFrame(reportContentSize));
     }
   });
   window.__refraktReportError=function(err){
@@ -2496,6 +2495,9 @@ requestAnimationFrame(draw);
     });
     window.__JUCE__.backend.addEventListener('spectrumUpdate', arr=>{
       for(let i=0;i<SPECTRUM_BINS&&i<arr.length;i++) realSpectrum[i]=arr[i];
+    });
+    window.__JUCE__.backend.addEventListener('remeasure', ()=>{
+      if(window.__refraktMeasureAndReport) window.__refraktMeasureAndReport();
     });
   }
 })();

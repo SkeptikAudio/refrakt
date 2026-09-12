@@ -49,30 +49,6 @@ private:
 
     std::optional<juce::WebBrowserComponent::Resource> getResource (const juce::String& url);
 
-    // Confirmed empirically, twice, at two different requested sizes: the
-    // page's own window.innerWidth/innerHeight consistently render at
-    // ~1.1667x whatever logical Component size we ask for — present from
-    // the very first frame, not something that grows in after a delay (not
-    // a host override, a fixed mismatch). getPlatformScaleFactor() alone
-    // does NOT equal that ratio directly (it read 1.75 while the mismatch
-    // stayed ~1.1667) — but 1.75/1.5 = 1.1667 exactly, and compensating on
-    // that basis lands the *logical* size back on 940 (the design's actual
-    // width), which is too clean to be coincidence: this WebView2 build
-    // appears to assume a fixed 150% baseline internally regardless of the
-    // monitor's true scale, and getPlatformScaleFactor()/1.5 is the
-    // resulting leftover error the page actually renders at. Dividing our
-    // target by this ratio before calling setSize/setResizeLimits
-    // pre-compensates so the page ends up seeing the size we intended.
-    double getDpiCompensation() const
-    {
-        if (auto* peer = getPeer())
-        {
-            const double scale = peer->getPlatformScaleFactor();
-            if (scale > 0.01) return scale / 1.5;
-        }
-        return 1.0;
-    }
-
     // User presets: a real JSON file (not browser localStorage, which was
     // tied to a temp-directory WebView2 profile and would vanish) —
     // Source lives under the user's app-data folder, loaded once at
@@ -99,6 +75,14 @@ private:
     bool webView2RuntimeAvailable = true;
 
     std::unordered_map<juce::String, float> lastKnownParamValues;
+
+    // Detects the plugin window moving to a differently-scaled monitor while
+    // already open (e.g. dragged from a 100% display to a 150% one) so the
+    // size correction in handleReportContentSize can be re-run for the new
+    // DPI — see that function's comment. Checked once per timer tick rather
+    // than via a peer-DPI-changed callback since the 30Hz timer already runs
+    // for parameter/meter sync.
+    double lastKnownPeerScale = 0.0;
 
     // The mockup's non-embedded .plugin width is a fixed 940px — but in
     // embedded mode (see index.html's `body.embedded .plugin{width:100%}`)
