@@ -22,9 +22,19 @@ html,body{background:#050505;min-height:100%}
    panel) simply continues down to fill whatever extra height the host
    insists on, instead of that leftover space showing .outer/body's
    background as a visually distinct "stray black bar" glitch. */
-body.embedded,body.embedded .outer,body.embedded .plugin{height:100%}
-body.embedded .outer{padding:0;background:#0d0d0d;border-radius:0}
-body.embedded .plugin{width:100%;margin:0;border:none;border-radius:0;box-shadow:none}
+/* Embedded (real plugin window): .plugin is a FIXED 940px-wide design-size
+   stage with natural (auto) height, and fitToViewport() (script below) scales
+   the whole thing uniformly to whatever viewport the host actually gives us.
+   The old fluid layout (width/height:100%) reflowed and CLIPPED content
+   whenever the host window came out narrower or shorter than requested
+   (below ~824px wide the .sec row overflowed and was cut off; a short window
+   cropped the bottom). Fixed size + uniform scale = nothing can reflow, so
+   nothing can be cropped, and overflow:hidden means no scrollbar can appear.
+   flex:none matters: .outer is a flex container and flex items shrink. */
+html.embedded{background:#0d0d0d}
+body.embedded{overflow:hidden;background:#0d0d0d}
+body.embedded .outer{padding:0;background:#0d0d0d;border-radius:0;justify-content:safe center;align-items:flex-start}
+body.embedded .plugin{width:940px;flex:none;height:auto;margin:0;border:none;border-radius:0;box-shadow:none}
 .hdr{display:flex;align-items:center;justify-content:space-between;padding:13px 20px 11px;border-bottom:1px solid #1e1e1e;position:relative;gap:10px}
 .logo-wrap{display:flex;flex-direction:column;flex-shrink:0}
 .logo{font-size:19px;font-weight:700;letter-spacing:.08em;color:#fff}
@@ -317,6 +327,44 @@ canvas.knob.disabled{opacity:.32;pointer-events:none;cursor:not-allowed}
 </div>
 </div>
 <script>
+// Scale-to-fit for the embedded plugin window. The native side sizes the window
+// to (design size x chosen scale, corrected for the monitor's DPI mismatch), so
+// in the normal case this is exactly the chosen scale (100% -> zoom 1). If the
+// host ever hands back a different size, the whole GUI scales uniformly to fit
+// instead of reflowing/cropping. Never scales UP past the chosen scale.
+// Design size is read from offsetWidth/offsetHeight, which are layout px and so
+// unaffected by the zoom this function sets.
+let fitZoom=1;
+// Natural (design-size) height, measured at zoom 1: text rounding makes the layout
+// height drift a few px at other zoom levels, which would skew the window size.
+function naturalHeight(){
+  const el=document.querySelector('.plugin');
+  if(!el)return 0;
+  const prev=document.body.style.zoom;
+  document.body.style.zoom=1;
+  const h=Math.ceil(el.getBoundingClientRect().height-1e-3);
+  document.body.style.zoom=prev;
+  return h;
+}
+function fitToViewport(){
+  if(!document.body.classList.contains('embedded'))return;
+  const el=document.querySelector('.plugin');
+  if(!el)return;
+  // Measure the design size at zoom 1 (layout height drifts a few px at other zooms).
+  document.body.style.zoom=1;
+  const w=el.offsetWidth,h=el.offsetHeight;
+  if(!w||!h)return;
+  fitZoom=Math.min(currentScalePct/100,window.innerWidth/w,window.innerHeight/h);
+  document.body.style.zoom=fitZoom;
+  // Text rounding makes layout height drift a few px as the zoom changes, so
+  // verify what is actually DRAWN and tighten until it fits (guarantees no crop).
+  for(let i=0;i<5;i++){
+    const r=el.getBoundingClientRect();
+    if(r.width<=window.innerWidth+0.5&&r.height<=window.innerHeight+0.5)break;
+    fitZoom*=Math.min(window.innerWidth/r.width,window.innerHeight/r.height)*0.998;
+    document.body.style.zoom=fitZoom;
+  }
+}
 // On-page error overlay — JUCE's WebView2 backend hardcodes DevTools off
 // (AreDevToolsEnabled(false) in juce_WebBrowserComponent_windows.cpp), so
 // there is no console to open inside the actual plugin. This makes any
@@ -340,9 +388,9 @@ canvas.knob.disabled{opacity:.32;pointer-events:none;cursor:not-allowed}
   function reportContentSize(){
     const el=document.querySelector('.plugin');
     if(!el||!window.__refraktReportContentSize)return;
-    let contentH=0;
-    for(const child of el.children) contentH+=child.getBoundingClientRect().height;
-    window.__refraktReportContentSize(Math.round(contentH),window.innerWidth,window.innerHeight);
+    // Natural (design-size) height: .plugin has height:auto when embedded, so its
+    // own box IS the content.
+    window.__refraktReportContentSize(naturalHeight(),window.innerWidth,window.innerHeight);
   }
   window.__refraktMeasureAndReport=reportContentSize;
 
@@ -350,10 +398,21 @@ canvas.knob.disabled{opacity:.32;pointer-events:none;cursor:not-allowed}
     document.body.appendChild(box);
     if(window.__JUCE__){
       document.body.classList.add('embedded');
-      // Two rAFs to be sure layout/fonts have settled before measuring.
-      // currentScalePct is always 100 here (before any zoom is applied), so
-      // no zoom-unscaling math is needed on the JS side.
-      requestAnimationFrame(()=>requestAnimationFrame(reportContentSize));
+      document.documentElement.classList.add('embedded');
+      fitToViewport();
+      window.addEventListener('resize',fitToViewport);
+      // ONE size report, sent once web fonts have settled (they change text
+      // metrics, so measuring earlier would size the window for the fallback
+      // font). Deliberately NOT a second follow-up report: the native side derives
+      // the DPI ratio from innerWidth/innerHeight vs the window size it last set,
+      // and a follow-up sent right after the first correction can carry a stale
+      // viewport and wildly skew the window. The 1.5s cap covers offline/slow fonts.
+      window.addEventListener('load',()=>{
+        const fontsReady=(document.fonts&&document.fonts.ready)
+          ?Promise.race([document.fonts.ready,new Promise(r=>setTimeout(r,1500))])
+          :Promise.resolve();
+        fontsReady.then(()=>requestAnimationFrame(()=>requestAnimationFrame(()=>{fitToViewport();reportContentSize();})));
+      });
     }
   });
   window.__refraktReportError=function(err){
@@ -732,7 +791,7 @@ const SCALE_STEPS=[75,100,125,150];
 let currentScalePct=100;
 function applyScale(pct){
   currentScalePct=pct;
-  document.body.style.zoom=(pct/100);
+  fitToViewport(); // zoom is derived from the real viewport now, never set blindly (see fitToViewport)
   document.querySelectorAll('.scale-btn').forEach(b=>b.classList.toggle('on',Number(b.dataset.pct)===pct));
   // Tells the native window to resize to match, so scaling up/down never
   // leaves dead space or clips content — the window IS the scaled content,

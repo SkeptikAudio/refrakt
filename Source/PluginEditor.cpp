@@ -377,8 +377,10 @@ void RefraktEditor::handleReportContentSize (const juce::Array<juce::var>& args,
         const double ratioW = (viewportW > 0.5 && requestedW > 0.5) ? viewportW / requestedW : 1.0;
         const double ratioH = (viewportH > 0.5 && requestedH > 0.5) ? viewportH / requestedH : 1.0;
 
-        const int w = juce::roundToInt ((double) kDesignWidth / ratioW);
-        const int h = juce::roundToInt (contentH / ratioH);
+        // Round UP (epsilon so exact values don't gain a pixel): rounding down can
+        // leave the window a fraction of a pixel smaller than the content.
+        const int w = (int) std::ceil ((double) kDesignWidth / ratioW - 1.0e-6);
+        const int h = (int) std::ceil (contentH / ratioH - 1.0e-6);
 
         if (w > 0 && h > 0 && (w != baseWidth || h != baseHeight))
         {

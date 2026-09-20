@@ -126,3 +126,12 @@ if(WIN32)
     endif()
 endif()
 add_test(NAME AudioProcessingTests COMMAND RefraktAudioTests)
+# GUI fit regression check: loads the real index.html in headless Edge (in
+# embedded mode, with a stubbed JUCE bridge) at many window sizes and JUCE/WebView2
+# DPI ratios, and asserts the GUI is never cropped, never mis-scaled and never
+# shows a scrollbar (see the header of Tests/gui_fit_check.js). Skips itself
+# (exit 0) where Edge isn't installed, and is only registered when Node is available.
+find_program(REFRAKT_NODE node)
+if(REFRAKT_NODE)
+    add_test(NAME GuiFitCheck COMMAND ${REFRAKT_NODE} ${CMAKE_CURRENT_SOURCE_DIR}/Tests/gui_fit_check.js)
+endif()
