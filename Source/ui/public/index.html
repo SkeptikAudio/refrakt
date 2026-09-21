@@ -44,7 +44,12 @@ body.embedded .plugin{width:940px;flex:none;height:auto;margin:0;border:none;bor
 .preset-bar{display:flex;align-items:center;gap:2px;flex:1;justify-content:center;position:relative;max-width:260px;margin:0 auto;background:linear-gradient(180deg,rgba(255,255,255,0.035),rgba(255,255,255,0.01));border:1px solid #1e1e1e;border-radius:6px;padding:3px 6px}
 .action-btn,.menu-icon,.tool-btn,.mb,.sb,.invert-btn,.div-btn{border-radius:6px;border:1.5px solid #424242;background:linear-gradient(180deg,rgba(255,255,255,0.045),rgba(255,255,255,0.006) 45%,rgba(0,0,0,0.05));cursor:pointer;transition:.15s;box-shadow:inset 0 1px 0 rgba(255,255,255,0.06),inset 0 -1px 2px rgba(0,0,0,0.35),0 1px 1px rgba(0,0,0,0.3);outline:none}
 .action-btn:active,.menu-icon:active,.tool-btn:active,.mb:active,.sb:active,.invert-btn:active,.div-btn:active{background:linear-gradient(180deg,rgba(0,0,0,0.25),rgba(0,0,0,0.15));transform:translateY(0.5px)}
-.parr:focus-visible,.action-btn:focus-visible,.menu-icon:focus-visible,.tool-btn:focus-visible,.mb:focus-visible,.sb:focus-visible,.invert-btn:focus-visible,.div-btn:focus-visible,.pname:focus-visible,.sync-toggle:focus-visible{outline:2px solid #8e009f;outline-offset:2px}
+/* Keyboard-focus rings ONLY while the user is really navigating with Tab (body.kbd-nav, set by the
+   script below), never after mouse use. Knobs/buttons take focus when clicked, and pressing ANY key
+   afterwards (e.g. Space to play/stop in the DAW) makes the browser's :focus-visible match -- which
+   used to draw a purple ring around the last knob touched. Without kbd-nav, no ring is drawn at all. */
+:focus-visible{outline:none}
+body.kbd-nav .parr:focus-visible,body.kbd-nav .action-btn:focus-visible,body.kbd-nav .menu-icon:focus-visible,body.kbd-nav .tool-btn:focus-visible,body.kbd-nav .mb:focus-visible,body.kbd-nav .sb:focus-visible,body.kbd-nav .invert-btn:focus-visible,body.kbd-nav .div-btn:focus-visible,body.kbd-nav .pname:focus-visible,body.kbd-nav .sync-toggle:focus-visible{outline:2px solid #8e009f;outline-offset:2px}
 .action-btn:hover,.menu-icon:hover,.tool-btn:hover,.mb:hover,.sb:hover,.invert-btn:hover,.div-btn:hover{box-shadow:inset 0 1px 0 rgba(255,255,255,0.09),inset 0 -1px 2px rgba(0,0,0,0.35),0 1px 1px rgba(0,0,0,0.3),0 0 7px rgba(255,255,255,0.22);border-color:#888}
 .action-btn:hover,.tool-btn:hover,.mb:hover,.invert-btn:hover,.div-btn:hover{color:#fff}
 .parr{width:20px;height:20px;display:flex;align-items:center;justify-content:center;color:#999;font-size:12px;cursor:pointer;transition:.15s;border-radius:6px}
@@ -84,7 +89,7 @@ canvas#mc{display:block;width:100%;height:390px}
 .kg{display:flex;flex-direction:column;align-items:center;gap:4px;flex:1;position:relative}
 .knob-slot{height:42px;display:flex;align-items:center;justify-content:center}
 canvas.knob{width:42px;height:42px;cursor:ns-resize;touch-action:none;transition:opacity .25s;outline:none;border-radius:50%;filter:drop-shadow(0 3px 5px rgba(0,0,0,0.45))}
-canvas.knob:focus-visible{outline:2px solid #8e009f;outline-offset:3px}
+body.kbd-nav canvas.knob:focus-visible{outline:2px solid #8e009f;outline-offset:3px}
 canvas.knob.knob-lg{width:42px;height:42px}
 canvas.knob.disabled{opacity:.32;pointer-events:none;cursor:not-allowed}
 .kl{font-size:8px;color:#aaa;letter-spacing:.1em;text-transform:uppercase;font-weight:500;transition:color .25s}
@@ -1186,8 +1191,15 @@ undoStack=[];redoStack=[];
 document.querySelector('.pname-text').textContent=PRESETS[0].name;
 document.querySelector('.pname-cat').textContent=PRESETS[0].cat;
 document.querySelectorAll('.parr,.pname,.action-btn,.menu-icon,.tool-btn,.mb,.sb,.invert-btn,.div-btn,.sync-toggle').forEach(el=>{el.tabIndex=0;});
+// Focus-ring gate (see the CSS note on body.kbd-nav): only Tab turns keyboard-navigation mode on,
+// any mouse/touch/pen press turns it off again. Space/Enter/arrows do NOT turn it on.
+document.addEventListener('keydown',e=>{if(e.key==='Tab')document.body.classList.add('kbd-nav');},true);
+document.addEventListener('pointerdown',()=>document.body.classList.remove('kbd-nav'),true);
 document.addEventListener('keydown',e=>{
   if(e.key!=='Enter'&&e.key!==' ')return;
+  // Only while navigating with Tab: a button that merely kept focus after a MOUSE click must not be
+  // re-clicked by Space (the DAW's play/stop key) or Enter.
+  if(!document.body.classList.contains('kbd-nav'))return;
   const el=document.activeElement;
   if(el&&el.matches('.parr,.pname,.action-btn,.menu-icon,.tool-btn,.mb,.sb,.invert-btn,.div-btn,.sync-toggle')){
     e.preventDefault();el.click();

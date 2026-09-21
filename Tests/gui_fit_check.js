@@ -31,7 +31,9 @@ const CONFIG = {
   reportName: 'reportContentSize', // native function name the page calls to report its size
   initialLogical: { w: 940, h: 760 }, // the editor's baseWidth/baseHeight
   deadSpaceTolerance: 6,           // px of leftover background allowed after the window correction (text row heights can differ 2-4px with the viewport the page loaded at)
-  layoutHeightTolerance: 12,       // px: layout height may drift this much when the page scales via CSS zoom (text rounding); 0 for transform-based scaling
+  knobSelector: 'canvas.knob',     // Part D (focus ring): a knob to click; delete this line if the plugin has none
+  buttonSelector: '.tool-btn',            // Part D: optional focusable button (must not be re-clicked by Space/Enter after a mouse click)
+  layoutHeightTolerance: 12,        // px: layout height may drift this much when the page scales via CSS zoom (text rounding); 0 for transform-based scaling
   // Mirror of the native handleReportContentSize: given the reported args and the
   // window's current logical size, return the new logical size.
   nativeSize(args, L) {
@@ -157,6 +159,82 @@ function check(name, ok, info) { if (!ok) { failures++; console.log('FAIL', name
     check(`${tag}: drawn at natural scale after correction (within 0.5%)`, m.fit > 0.995, m.fit);
     check(`${tag}: no dead space after correction (<=${CONFIG.deadSpaceTolerance}px)`, m.vw - m.right <= CONFIG.deadSpaceTolerance && m.vh - m.bottom <= CONFIG.deadSpaceTolerance,
           `dead ${(m.vw - m.right).toFixed(1)}x${(m.vh - m.bottom).toFixed(1)}`);
+  }
+
+  // ---------------- PART C ----------------
+  // Only for plugins with a GUI-scale setting (CONFIG.scaleSteps + CONFIG.applyScaleFn). Simulates what
+  // happens when the user picks a scale in Settings: the page is told (applyScale), the native side
+  // resizes the window to base x pct (mirrored below -- KEEP IN SYNC with handleSetScale in
+  // PluginEditor.cpp), and the page must then fill that window exactly at that scale.
+  if (CONFIG.scaleSteps && CONFIG.applyScaleFn) {
+    console.log('--- Part C: GUI scale (Settings menu) simulation');
+    for (const ratio of [1.0, 0.865, 1.5]) {
+      let L = { ...CONFIG.initialLogical };
+      await load(L.w * ratio, L.h * ratio);
+      let m = await evalJs(measure);
+      for (const args of m.reports) {                       // same first correction as Part B
+        const next = CONFIG.nativeSize(args, L);
+        if (next.w > 0 && next.h > 0) L = next;
+      }
+      const base = { ...L };                                // natural (100%) logical window size
+      for (const pct of [...CONFIG.scaleSteps, 100]) {      // ends back at 100%
+        await evalJs(`${CONFIG.applyScaleFn}(${pct})`);
+        const W = Math.ceil(base.w * pct / 100 - 1e-6), H = Math.ceil(base.h * pct / 100 - 1e-6);
+        await setViewport(W * ratio, H * ratio);
+        await sleep(500);
+        m = await evalJs(measure);
+        const tag = `ratio ${ratio}, ${pct}%`;
+        check(`${tag}: layout size unchanged`, m.lw === nat.lw && Math.abs(m.lh - nat.lh) <= CONFIG.layoutHeightTolerance, `${m.lw}x${m.lh}`);
+        check(`${tag}: GUI fits the resized window (nothing cropped)`, m.right <= m.vw + 0.5 && m.bottom <= m.vh + 0.5,
+              `drawn ${m.right.toFixed(1)}x${m.bottom.toFixed(1)} in ${m.vw}x${m.vh}`);
+        check(`${tag}: drawn at the chosen scale (within 0.5%)`, m.fit >= pct / 100 * 0.995 && m.fit <= pct / 100 * 1.001, m.fit);
+        check(`${tag}: no dead space (<=${CONFIG.deadSpaceTolerance + 3}px)`,
+              m.vw - m.right <= CONFIG.deadSpaceTolerance + 3 && m.vh - m.bottom <= CONFIG.deadSpaceTolerance + 3,
+              `dead ${(m.vw - m.right).toFixed(1)}x${(m.vh - m.bottom).toFixed(1)}`);
+      }
+    }
+  }
+
+  // ---------------- PART D ----------------
+  // Keyboard-focus rings. After a MOUSE click on a knob, pressing Space (the DAW's play/stop key) must not
+  // draw a purple focus ring around it (the ring belongs to real keyboard navigation with Tab only), and a
+  // focused button must not be re-clicked by Space/Enter. Uses real DevTools input events.
+  if (CONFIG.knobSelector) {
+    console.log('--- Part D: keyboard focus ring');
+    await load(nat.lw, nat.lh);
+    const centre = sel => evalJs(`(() => { const k = document.querySelector('${sel}'); const r = k.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
+    const mouse = (type, x, y) => send('Input.dispatchMouseEvent', { type, x, y, button: 'left', clickCount: 1 });
+    const click = async ({ x, y }) => { await mouse('mousePressed', x, y); await mouse('mouseReleased', x, y); await sleep(120); };
+    const key = async (k, code, vk) => {
+      await send('Input.dispatchKeyEvent', { type: 'keyDown', key: k, code, windowsVirtualKeyCode: vk });
+      await send('Input.dispatchKeyEvent', { type: 'keyUp', key: k, code, windowsVirtualKeyCode: vk });
+      await sleep(120);
+    };
+    const ring = () => evalJs(`(() => { const e = document.activeElement; return e ? { tag: e.tagName, outline: getComputedStyle(e).outlineStyle, kbd: document.body.classList.contains('kbd-nav') } : null; })()`);
+
+    const knob = await centre(CONFIG.knobSelector);
+    await click(knob);
+    let r = await ring();
+    check('mouse click focuses the knob', r && r.tag === 'CANVAS', JSON.stringify(r));
+    await key(' ', 'Space', 32);
+    r = await ring();
+    check('Space after a mouse click draws NO focus ring', r && r.outline === 'none', JSON.stringify(r));
+    await key('Tab', 'Tab', 9);
+    r = await ring();
+    check('Tab (real keyboard navigation) still shows the focus ring', r && r.outline === 'solid' && r.kbd === true, JSON.stringify(r));
+    await click(knob);
+    r = await ring();
+    check('clicking with the mouse again hides the ring', r && r.outline === 'none' && r.kbd === false, JSON.stringify(r));
+
+    if (CONFIG.buttonSelector) {
+      await evalJs(`(() => { window.__btnClicks = 0; document.querySelectorAll('${CONFIG.buttonSelector}').forEach(b => b.addEventListener('click', () => window.__btnClicks++)); })()`);
+      await click(await centre(CONFIG.buttonSelector));
+      const afterClick = await evalJs('window.__btnClicks');
+      await key(' ', 'Space', 32);
+      await key('Enter', 'Enter', 13);
+      const afterKeys = await evalJs('window.__btnClicks');
+      check('Space/Enter after a mouse click do not re-click the button', afterClick === 1 && afterKeys === 1, `clicks ${afterClick} -> ${afterKeys}`);
+    }
   }
 
   ws.close(); killEdge();
