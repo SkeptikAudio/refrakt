@@ -134,14 +134,28 @@ private:
     std::vector<float> fftDataL, fftDataR; // scratch copies scaled by gL(bin)/gR(bin) before inverse transform
     std::vector<float> overlapL, overlapR;
 
-    // Side path: NOT run through the FFT at all. Whatever inter-channel
-    // difference the input already had is preserved untouched — we only
-    // ever reposition the mid content, never the listener's existing width.
-    // Delayed by fftSize samples so it re-aligns with the FFT path's
-    // inherent block latency. Dry (for Mix) needs the identical delay for
-    // the identical reason, so both share one write cursor — they are, by
-    // construction, always the same position.
-    std::vector<float> sDelayLine, dryDelayL, dryDelayR;
+    // Side path: run through its OWN forward/inverse FFT round-trip, same
+    // fftSize/window/hop timing as mid (kept in lockstep via the shared
+    // fifoIndex/hopCounter below, not a separate pair), but with only ONE
+    // stream (never split toward L/R — side has no "pan", it's the
+    // inter-channel difference that already existed) and no repositioning:
+    // every bin's gain is exactly sideBinMask[bin], which is 1.0 everywhere
+    // (transparent passthrough — the plugin still never touches the
+    // listener's existing width by default) UNLESS Solo is active, in which
+    // case it's getSoloMask's value, silencing the side channel outside the
+    // soloed band exactly like the mid channel already does. Previously
+    // this was a bare delay line — solo isolating the mid content but
+    // leaving the side channel's full spectrum untouched made solo audibly
+    // "leak" on anything with real stereo width, since the side channel
+    // carries frequency content of its own that mid-only muting can't reach.
+    std::vector<float> inFifoS, outFifoSFifo, fftDataS, overlapS;
+    std::vector<float> sideBinMask; // filled by computeBinGains alongside binGainL/R
+
+    // Dry (for Mix) still needs a plain fftSize-sample delay to re-align
+    // with the FFT paths' inherent block latency — mid and side now both
+    // get that same latency for free from their own STFT round-trip, so
+    // only dry needs an explicit delay line at all.
+    std::vector<float> dryDelayL, dryDelayR;
     int delayWritePos { 0 };
 
     int fifoIndex { 0 };   // circular write pointer into inFifoM, wraps at fftSize

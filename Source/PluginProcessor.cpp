@@ -106,7 +106,11 @@ void RefraktProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     overlapL.assign ((size_t) fftSize, 0.0f);
     overlapR.assign ((size_t) fftSize, 0.0f);
 
-    sDelayLine.assign ((size_t) fftSize, 0.0f);
+    inFifoS.assign ((size_t) fftSize, 0.0f);
+    outFifoSFifo.assign ((size_t) hopSize, 0.0f);
+    fftDataS.assign ((size_t) (2 * fftSize), 0.0f);
+    overlapS.assign ((size_t) fftSize, 0.0f);
+
     dryDelayL.assign ((size_t) fftSize, 0.0f);
     dryDelayR.assign ((size_t) fftSize, 0.0f);
     delayWritePos = 0;
@@ -116,6 +120,7 @@ void RefraktProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     // just fills these in place every hop.
     binGainL.assign ((size_t) numBins, 1.0f);
     binGainR.assign ((size_t) numBins, 1.0f);
+    sideBinMask.assign ((size_t) numBins, 1.0f);
 
     // Bin -> log-frequency position is fixed for the lifetime of this
     // sample rate / FFT size — computed once instead of once per bin,
@@ -322,6 +327,12 @@ void RefraktProcessor::computeBinGains (juce::int64 frameStartSample)
 
         binGainL[(size_t) bin] = (float) (std::cos (theta) * sqrt2 * soloMask);
         binGainR[(size_t) bin] = (float) (std::sin (theta) * sqrt2 * soloMask);
+
+        // Side channel never gets a pan geometry (it has no "pan" — it's
+        // the inter-channel difference the input already had), only ever
+        // this same soloMask: 1.0 (transparent) with no solo active, or
+        // silenced outside the soloed band exactly like mid.
+        sideBinMask[(size_t) bin] = (float) soloMask;
     }
 }
 
@@ -446,6 +457,38 @@ void RefraktProcessor::processFFTFrame()
     std::copy (overlapR.begin() + hopSize, overlapR.end(), overlapR.begin());
     std::fill (overlapL.end() - hopSize, overlapL.end(), 0.0f);
     std::fill (overlapR.end() - hopSize, overlapR.end(), 0.0f);
+
+    // Side channel: its own forward/inverse round-trip, same fftSize/window
+    // and the SAME fifoIndex (kept hop-synchronised with mid, not a
+    // separate timer) so mid and side reconstruct with identical latency
+    // and recombine sample-for-sample correctly in processBlock. Only ever
+    // gets sideBinMask applied — no panning geometry, since the side
+    // channel doesn't have a "pan" to begin with.
+    for (int i = 0; i < fftSize; ++i)
+    {
+        fftDataS[(size_t) i] = inFifoS[(size_t) ((fifoIndex + i) % fftSize)] * window[(size_t) i];
+        fftDataS[(size_t) (i + fftSize)] = 0.0f;
+    }
+    fft->performRealOnlyForwardTransform (fftDataS.data(), true);
+
+    for (int bin = 0; bin < numBins; ++bin)
+    {
+        const float m = sideBinMask[(size_t) bin];
+        fftDataS[(size_t) (2 * bin)]     *= m;
+        fftDataS[(size_t) (2 * bin + 1)] *= m;
+    }
+
+    fft->performRealOnlyInverseTransform (fftDataS.data());
+
+    for (int i = 0; i < fftSize; ++i)
+        fftDataS[(size_t) i] *= window[(size_t) i];
+
+    for (int i = 0; i < fftSize; ++i)
+        overlapS[(size_t) i] += fftDataS[(size_t) i];
+    for (int i = 0; i < hopSize; ++i)
+        outFifoSFifo[(size_t) i] = overlapS[(size_t) i];
+    std::copy (overlapS.begin() + hopSize, overlapS.end(), overlapS.begin());
+    std::fill (overlapS.end() - hopSize, overlapS.end(), 0.0f);
 }
 
 void RefraktProcessor::processBlock (juce::AudioBuffer<float>& buffer,
@@ -498,22 +541,23 @@ void RefraktProcessor::processBlock (juce::AudioBuffer<float>& buffer,
         const float s = 0.5f * (l - r);
 
         inFifoM[(size_t) fifoIndex] = m;
-        sDelayLine[(size_t) delayWritePos] = s;
+        inFifoS[(size_t) fifoIndex] = s;
         dryDelayL[(size_t) delayWritePos] = l;
         dryDelayR[(size_t) delayWritePos] = r;
 
-        // Same fftSize-sample delay applied to the side channel AND the dry
-        // signal, so the Mix knob blends dry against wet perfectly aligned —
-        // a misaligned blend is exactly what causes comb-filtering.
+        // Dry needs an explicit fftSize-sample delay to re-align with the
+        // wet paths' inherent STFT round-trip latency — mid and side both
+        // get that same latency for free now (both go through their own
+        // overlap-add reconstruction), so only dry needs this anymore.
         const int readPos = (delayWritePos + 1) % fftSize; // oldest sample = fftSize behind
-        const float sDelayed  = sDelayLine[(size_t) readPos];
         const float dryLDelay = dryDelayL[(size_t) readPos];
         const float dryRDelay = dryDelayR[(size_t) readPos];
 
         const float mOutL = outFifoLFifo[(size_t) hopCounter];
         const float mOutR = outFifoRFifo[(size_t) hopCounter];
-        const float wetL = mOutL + sDelayed;
-        const float wetR = mOutR - sDelayed;
+        const float sOut  = outFifoSFifo[(size_t) hopCounter];
+        const float wetL = mOutL + sOut;
+        const float wetR = mOutR - sOut;
 
         const float mixNow = mixSmoothed.getNextValue();
         const float gainNow = gainSmoothed.getNextValue();

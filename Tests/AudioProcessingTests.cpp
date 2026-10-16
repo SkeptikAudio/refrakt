@@ -560,6 +560,68 @@ static void runSoloAudioIsolationCheck()
     CHECK (sumSqSoloed < sumSqBaseline * 0.5); // soloing a narrow zone must dramatically cut total energy
 }
 
+// --- Solo isolation on WIDE stereo material -----------------------------
+// The check above uses mono content (L==R), which never touches the side
+// channel at all — it would have passed even before the side channel got
+// its own FFT filtering (see PluginProcessor.h's comment on inFifoS), since
+// mid-only muting was already correct. This is the actual case that was
+// broken: independent L/R noise (real stereo width, so the side channel
+// carries broadband content of its own), confirming solo now cuts energy
+// on genuinely wide material too, not just mono.
+static void runSoloWideStereoIsolationCheck()
+{
+    const double sampleRate = 44100.0;
+    const int blockSize = 512;
+    const int fftSize = 2048;
+
+    RefraktProcessor baseline, soloed;
+    for (auto* p : { &baseline, &soloed })
+    {
+        p->setPlayConfigDetails (2, 2, sampleRate, blockSize);
+        p->prepareToPlay (sampleRate, blockSize);
+        setParam (p->apvts, "mix", 1.0f);
+        setParam (p->apvts, "output_gain", 0.0f);
+    }
+    soloed.setCustomShapeState ({}, { { 0.55f, 0.65f } });
+    soloed.setSoloTarget (0);
+
+    std::mt19937 rngL (11), rngR (22); // independent streams -> genuine stereo width, side != 0
+    std::uniform_real_distribution<float> dist (-0.4f, 0.4f);
+    juce::MidiBuffer midi;
+
+    double sumSqBaseline = 0.0, sumSqSoloed = 0.0;
+    const int totalSamples = fftSize * 12;
+    int samplesRun = 0;
+    while (samplesRun < totalSamples)
+    {
+        juce::AudioBuffer<float> bufA (2, blockSize), bufB (2, blockSize);
+        for (int i = 0; i < blockSize; ++i)
+        {
+            const float l = dist (rngL), r = dist (rngR); // independent -> real side content
+            bufA.setSample (0, i, l); bufA.setSample (1, i, r);
+            bufB.setSample (0, i, l); bufB.setSample (1, i, r);
+        }
+        baseline.processBlock (bufA, midi);
+        soloed.processBlock (bufB, midi);
+
+        if (samplesRun > fftSize * 2)
+        {
+            for (int ch = 0; ch < 2; ++ch)
+                for (int i = 0; i < blockSize; ++i)
+                {
+                    const float a = bufA.getReadPointer (ch)[i];
+                    const float b = bufB.getReadPointer (ch)[i];
+                    sumSqBaseline += (double) a * a;
+                    sumSqSoloed += (double) b * b;
+                }
+        }
+        samplesRun += blockSize;
+    }
+
+    CHECK (sumSqBaseline > 0.0);
+    CHECK (sumSqSoloed < sumSqBaseline * 0.5); // must still dramatically cut energy with real stereo width present
+}
+
 int main()
 {
     juce::ScopedJuceInitialiser_GUI juceInit;
@@ -596,6 +658,7 @@ int main()
     runCpuProfilingReport();
 
     runSoloAudioIsolationCheck();
+    runSoloWideStereoIsolationCheck();
 
     std::printf ("%d/%d checks passed\n", checks - failures, checks);
     return failures == 0 ? 0 : 1;

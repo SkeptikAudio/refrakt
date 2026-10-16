@@ -1487,7 +1487,12 @@ function getSafeBassSoloHitAt(xpx,ypx,padL,pw,midY){
   return Math.abs(xpx-pos.solo.x)<ICON_PX/2+2&&Math.abs(ypx-pos.solo.y)<ICON_PX/2+2;
 }
 function getZoneBodyAt(frac){
-  for(let zi=0;zi<zones.length;zi++){
+  // Reverse order: zones are DRAWN ascending (zi=0..length), so a later zone
+  // paints on top of an earlier one wherever they overlap — hit-testing has
+  // to match that same visual stacking (topmost/last-drawn wins), or an
+  // overlapping earlier zone silently steals clicks meant for the zone the
+  // user actually sees on top.
+  for(let zi=zones.length-1;zi>=0;zi--){
     const z=zones[zi];
     if(frac>z.lo+0.015&&frac<z.hi-0.015)return zi;
   }
@@ -1502,7 +1507,8 @@ function zoneIconPos(x1,x2,midY){
   return {solo:{x:cx-sep,y:midY},trash:{x:cx+sep,y:midY}};
 }
 function getZoneTrashHitAt(xpx,ypx,padL,pw,midY){
-  for(let zi=0;zi<zones.length;zi++){
+  // Same topmost-first reasoning as getZoneBodyAt above.
+  for(let zi=zones.length-1;zi>=0;zi--){
     const z=zones[zi];
     const x1=padL+z.lo*pw,x2=padL+z.hi*pw;
     const pos=zoneIconPos(x1,x2,midY);
@@ -1511,7 +1517,10 @@ function getZoneTrashHitAt(xpx,ypx,padL,pw,midY){
   return null;
 }
 function getZoneSoloHitAt(xpx,ypx,padL,pw,midY){
-  for(let zi=0;zi<zones.length;zi++){
+  // Same topmost-first reasoning as getZoneBodyAt above — this is the fix
+  // for zone solo buttons soloing the wrong (an earlier, overlapping) zone
+  // instead of whichever zone's icon the user actually clicked.
+  for(let zi=zones.length-1;zi>=0;zi--){
     const z=zones[zi];
     const x1=padL+z.lo*pw,x2=padL+z.hi*pw;
     const pos=zoneIconPos(x1,x2,midY);
@@ -1754,8 +1763,11 @@ mc.addEventListener('mousedown',e=>{
     return;
   }
   if(sbSolo){
-    pushUndo();
-    soloZone=soloZone==='safebass'?null:'safebass';
+    // Press-and-hold, not a toggle: solo stays on only while the mouse
+    // button is actually down (see the window 'mouseup' listener, which
+    // always clears soloZone) — no pushUndo either, a momentary audition
+    // isn't an edit to undo.
+    soloZone='safebass';
     return;
   }
   if(sbHandle){
@@ -1768,8 +1780,8 @@ mc.addEventListener('mousedown',e=>{
     return;
   }
   if(soloZi!==null){
-    pushUndo();
-    soloZone=soloZone===soloZi?null:soloZi;
+    // Same press-and-hold behaviour as sbSolo above.
+    soloZone=soloZi;
     return;
   }
   if(handle){
@@ -1820,6 +1832,7 @@ mc.addEventListener('mousedown',e=>{
 });
 window.addEventListener('mouseup',()=>{
   dragNode=null;
+  soloZone=null; // press-and-hold solo: releasing the mouse anywhere ends it, not just releasing over the icon
   if(dragHandle){
     releaseInfo={zi:dragHandle.zi,time:clock};
     const z=zones[dragHandle.zi];
