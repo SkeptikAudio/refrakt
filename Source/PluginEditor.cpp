@@ -227,7 +227,11 @@ void RefraktEditor::timerCallback()
         }
     }
 
-    auto* obj = new juce::DynamicObject();
+    // Ref-counted holder: an object built on a tick where nothing changed is
+    // freed again instead of leaking (a raw `new` only gets an owner once it
+    // is wrapped in the var below -- previously that leaked one object per
+    // timer tick, 30 times a second, whenever no parameter had changed).
+    juce::DynamicObject::Ptr obj (new juce::DynamicObject());
     bool anyChanged = false;
 
     for (auto* id : kSyncedParamIDs)
@@ -243,7 +247,7 @@ void RefraktEditor::timerCallback()
     }
 
     if (anyChanged)
-        webView.emitEventIfBrowserIsVisible ("stateChanged", juce::var (obj));
+        webView.emitEventIfBrowserIsVisible ("stateChanged", juce::var (obj.get()));
 
     // Real post-processing output levels/correlation — the JS meters used
     // to fake these from the displayed curve shape (moved with Phase/params
