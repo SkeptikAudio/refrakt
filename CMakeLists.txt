@@ -4,14 +4,14 @@ project(Refrakt VERSION 1.0.0)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# C:/Projects/JUCE only ever exists on this one dev machine — anywhere
+# A JUCE checkout next to this repo (../JUCE) only exists on a dev machine — anywhere
 # else (CI, another contributor, a fresh clone) needs JUCE fetched fresh.
 # Reuses the local checkout when it's present (fast, no network) and falls
 # back to cloning the exact same tagged version otherwise, so CI and local
 # builds compile against identical JUCE code.
 include(FetchContent)
-if(EXISTS "C:/Projects/JUCE/CMakeLists.txt")
-    FetchContent_Declare(JUCE SOURCE_DIR "C:/Projects/JUCE")
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../JUCE/CMakeLists.txt")
+    FetchContent_Declare(JUCE SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../JUCE")
 else()
     FetchContent_Declare(JUCE
         GIT_REPOSITORY https://github.com/juce-framework/JUCE.git
@@ -20,6 +20,10 @@ else()
     )
 endif()
 FetchContent_MakeAvailable(JUCE)
+
+# Dev-time UI file for hot reload (see PluginEditor.cpp): derived from wherever
+# this checkout lives, so the repo works from any folder or drive.
+add_compile_definitions("SKEPTIK_UI_DEV_FILE=\"${CMAKE_CURRENT_SOURCE_DIR}/Source/ui/public/index.html\"")
 
 juce_add_plugin(Refrakt
     COMPANY_NAME "SkeptikAudio"
@@ -44,7 +48,7 @@ target_sources(Refrakt PRIVATE
 )
 
 # Ships the actual UI inside the plugin binary instead of loading it from a
-# hardcoded dev-machine path (C:/Projects/Refrakt/...) — that path only
+# dev-machine path (the repo's own Source/ui) — that path only
 # ever existed on this machine, so any other machine (tester, Mac build)
 # would just get a blank editor window without this. The dev-time file://
 # hot-reload path (see PluginEditor.cpp) still works unchanged when that

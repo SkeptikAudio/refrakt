@@ -10,7 +10,7 @@ namespace
     // needs to switch to an embedded/BinaryData resource provider instead
     // (see the commented-out getResource() path below, already wired as a
     // fallback) — flagged rather than silently deferred.
-    const juce::File kUiFile { "C:/Projects/Refrakt/Source/ui/public/index.html" };
+    const juce::File kUiFile { SKEPTIK_UI_DEV_FILE }; // set by CMakeLists.txt
 
     // WebView2 needs a writable folder for its own profile data. Left
     // unspecified, it defaults to a location relative to the HOST
@@ -470,7 +470,7 @@ void RefraktEditor::handleDeleteUserPreset (const juce::Array<juce::var>& args, 
 std::optional<juce::WebBrowserComponent::Resource> RefraktEditor::getResource (const juce::String& url)
 {
     // This is what every machine other than the dev one actually uses (the
-    // hardcoded C:/Projects/Refrakt/... dev path in uiFile only ever
+    // dev-time source path in uiFile only ever
     // exists here) — the UI is embedded in the binary via BinaryData
     // (see CMakeLists.txt) rather than read from disk, so a packaged
     // build works on a tester's machine with no extra files alongside it.
